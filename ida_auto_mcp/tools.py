@@ -5,6 +5,10 @@ Use open_binary / switch_binary to manage which database is active.
 
 IDA modules are imported inside each function to ensure they are
 only accessed after idapro has been initialized.
+
+Tools that modify the database or write files use @write_tool, and
+run_script uses @script_tool; both stay disabled unless the server is
+started with --allow-write / --allow-script.
 """
 
 import fnmatch
@@ -13,7 +17,7 @@ import re
 import sys
 from typing import Annotated, Optional
 
-from ._registry import tool
+from ._registry import script_tool, tool, write_tool
 from .session import get_manager
 
 
@@ -153,7 +157,7 @@ def wait_analysis() -> dict:
     return {"success": True, "message": "Auto-analysis completed"}
 
 
-@tool
+@write_tool
 def save_database(
     path: Annotated[str, "Save path (empty = current IDB path)"] = "",
 ) -> dict:
@@ -662,7 +666,7 @@ def search_bytes(
 # ============================================================================
 
 
-@tool
+@write_tool
 def rename_address(
     address: Annotated[str, "Address (hex) or current name"],
     new_name: Annotated[str, "New name to assign"],
@@ -681,7 +685,7 @@ def rename_address(
     }
 
 
-@tool
+@write_tool
 def set_comment(
     address: Annotated[str, "Address (hex) to set comment on"],
     comment: Annotated[str, "Comment text"],
@@ -697,7 +701,7 @@ def set_comment(
     return {"success": bool(ok), "address": hex(ea)}
 
 
-@tool
+@write_tool
 def set_function_type(
     address: Annotated[str, "Function address (hex) or name"],
     type_str: Annotated[
@@ -1132,7 +1136,7 @@ def list_entrypoints() -> dict:
     return {"entrypoints": entries, "count": len(entries)}
 
 
-@tool
+@write_tool
 def patch_bytes(
     address: Annotated[str, "Address (hex) to patch at"],
     hex_bytes: Annotated[str, "Hex string of bytes to write (e.g. '90 90 90' or '909090')"],
@@ -1241,7 +1245,7 @@ def list_local_types(
     return {"types": page, "total": total, "offset": offset, "has_more": offset + count < total}
 
 
-@tool
+@write_tool
 def declare_type(
     declaration: Annotated[
         str,
@@ -1276,7 +1280,7 @@ def declare_type(
     }
 
 
-@tool
+@write_tool
 def apply_type(
     address: Annotated[str, "Address (hex) or function/symbol name"],
     type_str: Annotated[
@@ -1313,7 +1317,7 @@ def apply_type(
 # ============================================================================
 
 
-@tool
+@write_tool
 def define_function(
     address: Annotated[str, "Start address (hex) for the new function"],
     end_address: Annotated[str, "End address (hex), empty for auto-detect"] = "",
@@ -1345,7 +1349,7 @@ def define_function(
     }
 
 
-@tool
+@write_tool
 def define_code(
     address: Annotated[str, "Address (hex) to convert to code"],
 ) -> dict:
@@ -1365,7 +1369,7 @@ def define_code(
     }
 
 
-@tool
+@write_tool
 def undefine_code(
     address: Annotated[str, "Address (hex) to undefine"],
     size: Annotated[int, "Number of bytes to undefine (default 1)"] = 1,
@@ -1383,7 +1387,7 @@ def undefine_code(
 # ============================================================================
 
 
-@tool
+@write_tool
 def patch_asm(
     address: Annotated[str, "Address (hex) to patch at"],
     assembly: Annotated[str, "Assembly instruction to assemble and patch, e.g. 'nop' or 'xor eax, eax'"],
@@ -1517,7 +1521,7 @@ def find_insns(
 # ============================================================================
 
 
-@tool
+@write_tool
 def declare_stack_var(
     address: Annotated[str, "Function address (hex) or name"],
     var_offset: Annotated[int, "Stack frame offset for the variable"],
@@ -1552,7 +1556,7 @@ def declare_stack_var(
     return {"success": True, "address": hex(ea), "offset": var_offset, "name": var_name}
 
 
-@tool
+@write_tool
 def delete_stack_var(
     address: Annotated[str, "Function address (hex) or name"],
     var_offset: Annotated[int, "Stack frame offset of the variable to delete"],
@@ -1577,7 +1581,7 @@ def delete_stack_var(
 # ============================================================================
 
 
-@tool
+@write_tool
 def enum_upsert(
     name: Annotated[str, "Enum type name"],
     members: Annotated[
@@ -1911,7 +1915,7 @@ def export_function(
 # ============================================================================
 
 
-@tool
+@script_tool
 def run_script(
     script: Annotated[str, "IDAPython script code to execute"],
 ) -> dict:
@@ -1945,7 +1949,7 @@ def run_script(
 # ============================================================================
 
 
-@tool
+@write_tool
 def infer_types(
     address: Annotated[str, "Address (hex) or function/symbol name"],
 ) -> dict:
@@ -2072,7 +2076,7 @@ def trace_data_flow(
 # ============================================================================
 
 
-@tool
+@write_tool
 def append_comment(
     address: Annotated[str, "Address (hex) to append comment to"],
     comment: Annotated[str, "Comment text to append"],

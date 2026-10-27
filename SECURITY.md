@@ -30,13 +30,14 @@ There are no tagged releases. Security fixes go to the latest commit on `master`
 
 In scope:
 
-- the MCP server and its stdio and HTTP transports
+- the MCP server and its stdio and HTTP transports, including the HTTP bearer-token, `Host` and `Origin` checks
 - any way for someone other than the MCP client you configured to reach the server or call its tools
+- tools that are off by default being listed or callable without `--allow-write` / `--allow-script`
 - tools that write files or modify the IDA database doing more than they document
 
 Not vulnerabilities:
 
-- Every tool is available to the MCP client you configure, and `run_script` executes arbitrary IDAPython by design. A configured client being able to do what the tools do is expected.
+- Once you start the server with `--allow-write` or `--allow-script`, the MCP client you configured can use those tools, and `run_script` executes arbitrary IDAPython by design. A configured client being able to do what the enabled tools do is expected.
 - Strings, names and decompiled code returned from an analysed binary come from the sample itself and should be treated as untrusted. Guarding the AI agent against prompt injection hidden in samples is up to the MCP client.
 - Bugs in IDA Pro, idalib or the Hex-Rays decompiler, including crashes on malformed binaries; please report those to [Hex-Rays](https://hex-rays.com/).
 
@@ -68,12 +69,13 @@ Not vulnerabilities:
 
 属于本项目的范围：
 
-- MCP 服务器本身及其 stdio、HTTP 两种传输方式
+- MCP 服务器本身及其 stdio、HTTP 两种传输方式，包括 HTTP 的 Bearer 令牌、`Host` 和 `Origin` 校验
 - 除你配置的 MCP 客户端之外，其他任何人能够访问服务器或调用其工具的途径
+- 默认关闭的工具在未使用 `--allow-write` / `--allow-script` 时仍能被列出或调用
 - 会写文件或修改 IDA 数据库的工具做了超出其文档说明的事
 
 不属于漏洞：
 
-- 你配置的 MCP 客户端可以使用全部工具，`run_script` 按设计就会执行任意 IDAPython。已配置的客户端能做到这些工具本来就能做的事，属于预期行为。
+- 用 `--allow-write` 或 `--allow-script` 启动服务器后，你配置的 MCP 客户端就可以使用这些工具，`run_script` 按设计就会执行任意 IDAPython。已配置的客户端能做到已开启的工具本来就能做的事，属于预期行为。
 - 从被分析二进制中返回的字符串、名称和反编译代码都来自样本本身，应视为不可信。防范样本中暗藏的提示注入攻击 AI 代理，由 MCP 客户端负责。
 - IDA Pro、idalib 或 Hex-Rays 反编译器自身的问题（包括解析畸形二进制时崩溃），请向 [Hex-Rays](https://hex-rays.com/) 报告。

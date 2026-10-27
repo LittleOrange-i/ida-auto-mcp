@@ -11,3 +11,4 @@ build/
 *.nam
 *.til
 .env
+.claude/settings.local.json

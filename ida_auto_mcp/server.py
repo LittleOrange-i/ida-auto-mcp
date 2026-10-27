@@ -7,7 +7,11 @@ Usage:
     # Open a binary on startup
     python -m ida_auto_mcp /path/to/binary.dll
 
-    # HTTP mode (for debugging with MCP Inspector)
+    # Also enable tools that modify the database / run arbitrary code
+    python -m ida_auto_mcp --allow-write --allow-script
+
+    # HTTP mode (for debugging with MCP Inspector); requires a bearer token,
+    # taken from IDA_AUTO_MCP_TOKEN or generated and printed on startup
     python -m ida_auto_mcp --transport http --port 8765
 
 MCP Client Configuration (Claude Desktop / claude_desktop_config.json):
@@ -37,6 +41,7 @@ def main():
             "Examples:\n"
             "  python -m ida_auto_mcp                          # Start in stdio mode\n"
             "  python -m ida_auto_mcp /path/to/file.exe        # Open file on startup\n"
+            "  python -m ida_auto_mcp --allow-write            # Allow renaming, comments, patching...\n"
             "  python -m ida_auto_mcp --transport http          # HTTP mode for debugging\n"
             "  python -m ida_auto_mcp --ida-dir /opt/ida        # Specify IDA installation\n"
         ),
@@ -69,6 +74,19 @@ def main():
         type=str,
         default=None,
         help="Path to IDA Pro installation directory (sets IDADIR env var)",
+    )
+    parser.add_argument(
+        "--allow-write",
+        action="store_true",
+        help=(
+            "Enable tools that modify the IDA database or save it to disk "
+            "(renaming, comments, types, code definition, patching, save_database)"
+        ),
+    )
+    parser.add_argument(
+        "--allow-script",
+        action="store_true",
+        help="Enable run_script, which executes arbitrary Python in this process",
     )
     parser.add_argument(
         "--verbose",
@@ -115,6 +133,11 @@ def main():
     from . import tools  # noqa: F401 - triggers @tool registration
     from .session import get_manager
 
+    if args.allow_write:
+        mcp.enabled_groups.add("write")
+    if args.allow_script:
+        mcp.enabled_groups.add("script")
+
     # Open initial binary if specified
     if args.input_path:
         if not args.input_path.exists():
@@ -152,7 +175,7 @@ def main():
     if args.transport == "stdio":
         mcp.stdio()
     else:
-        mcp.serve(args.host, args.port)
+        mcp.serve(args.host, args.port, token=os.environ.get("IDA_AUTO_MCP_TOKEN"))
 
     # Cleanup after server stops
     try:
