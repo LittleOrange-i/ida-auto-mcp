@@ -2,7 +2,7 @@
 
 from .mcp_server import McpServer
 
-mcp = McpServer("ida-auto-mcp", version="1.0.0")
+mcp = McpServer("ida-auto-mcp", version="1.0.1")
 
 
 def tool(func):
