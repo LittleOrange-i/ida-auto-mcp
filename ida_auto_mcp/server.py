@@ -42,6 +42,7 @@ def main():
             "  python -m ida_auto_mcp                          # Start in stdio mode\n"
             "  python -m ida_auto_mcp /path/to/file.exe        # Open file on startup\n"
             "  python -m ida_auto_mcp --allow-write            # Allow renaming, comments, patching...\n"
+            "  python -m ida_auto_mcp --timeout 600            # Stop tool calls after 10 minutes\n"
             "  python -m ida_auto_mcp --transport http          # HTTP mode for debugging\n"
             "  python -m ida_auto_mcp --ida-dir /opt/ida        # Specify IDA installation\n"
         ),
@@ -89,6 +90,25 @@ def main():
         help="Enable run_script, which executes arbitrary Python in this process",
     )
     parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300,
+        metavar="SECONDS",
+        help=(
+            "Stop a tool call that runs longer than this (default: 300; 0 for "
+            "no limit). A call busy inside one IDA function stops when that "
+            "function returns; on IDA 9.5+ decompilation stops in time too. "
+            "Opening, switching, closing and saving databases and waiting for "
+            "analysis are never stopped."
+        ),
+    )
+    parser.add_argument(
+        "--trace",
+        metavar="FILE",
+        default=None,
+        help="Append a JSON line per tool call (arguments, duration, errors) to FILE",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -111,7 +131,7 @@ def main():
     # Initialize idalib
     try:
         import idapro
-    except ImportError:
+    except ModuleNotFoundError:
         print(
             "Error: 'idapro' package not found.\n"
             "\n"
@@ -122,6 +142,14 @@ def main():
             "  3. Or set IDADIR and try again: --ida-dir /path/to/ida\n"
             "\n"
             "See: https://docs.hex-rays.com/release-notes/9_0#idalib",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except ImportError as e:
+        # idapro is installed but could not find or start idalib
+        print(
+            f"Error: cannot load IDA's idalib: {e}\n"
+            "Point IDADIR (or --ida-dir) at an IDA Pro 9.x installation.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -137,6 +165,8 @@ def main():
         mcp.enabled_groups.add("write")
     if args.allow_script:
         mcp.enabled_groups.add("script")
+    mcp.tool_timeout = args.timeout if args.timeout > 0 else None
+    mcp.trace_path = args.trace
 
     # Open initial binary if specified
     if args.input_path:

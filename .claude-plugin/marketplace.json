@@ -1,0 +1,15 @@
+{
+  "name": "ida-auto-mcp",
+  "owner": {
+    "name": "mufeng05",
+    "url": "https://github.com/mufeng05"
+  },
+  "description": "Headless IDA Pro MCP server for AI agents",
+  "plugins": [
+    {
+      "name": "ida-auto-mcp",
+      "source": "./",
+      "description": "Headless IDA Pro analysis: decompile, disassemble, xrefs, strings, imports and types. Read-only tools only."
+    }
+  ]
+}

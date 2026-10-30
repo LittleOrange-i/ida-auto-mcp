@@ -8,17 +8,25 @@ only accessed after idapro has been initialized.
 
 Tools that modify the database or write files use @write_tool, and
 run_script uses @script_tool; both stay disabled unless the server is
-started with --allow-write / --allow-script.
+started with --allow-write / --allow-script. Tools that open, switch or
+close databases use @session_tool.
 """
 
+import ast
 import fnmatch
 import io
+import json
+import linecache
 import re
 import sys
+import traceback
+from pathlib import Path
 from typing import Annotated, Optional
 
-from ._registry import script_tool, tool, write_tool
-from .session import get_manager
+from . import idb_files
+from ._registry import mcp, script_tool, session_tool, tool, write_tool
+from .mcp_server import ToolInterrupted
+from .session import LoadOptions, get_manager
 
 
 # ============================================================================
@@ -26,24 +34,50 @@ from .session import get_manager
 # ============================================================================
 
 
-@tool
+@session_tool
 def open_binary(
     input_path: Annotated[str, "Absolute path to the binary file to analyze"],
     auto_analysis: Annotated[bool, "Run IDA auto-analysis (recommended)"] = True,
+    processor: Annotated[
+        str, "Raw blobs: IDA processor module, e.g. 'arm', 'mipsl' (empty = detect)"
+    ] = "",
+    file_type: Annotated[
+        str, "Raw blobs: start of an IDA loader's file type, e.g. 'Binary file'"
+    ] = "",
+    base_address: Annotated[
+        str, "Raw blobs: load address, e.g. '0x8000000' (16-byte aligned)"
+    ] = "",
+    entry_point: Annotated[str, "Raw blobs: entry point address, e.g. '0x8000100'"] = "",
 ) -> dict:
-    """Open a binary file for analysis. Creates a new IDA session or reuses an existing one for the same file. This is the first tool you should call to start analyzing a binary."""
+    """Open a binary file for analysis. Creates a new IDA session or reuses an existing one for the same file. This is the first tool you should call to start analyzing a binary. The loader options (processor, file_type, base_address, entry_point) apply only when IDA creates the file's database, such as for raw firmware."""
     try:
-        session = get_manager().open_binary(input_path, auto_analysis=auto_analysis)
-        return {
+        options = LoadOptions(
+            processor=processor.strip(),
+            file_type=file_type.strip(),
+            base_address=_parse_number(base_address),
+            entry_point=_parse_number(entry_point),
+        )
+        path = Path(input_path).resolve()
+        has_database = idb_files.probe(path).state != "missing"
+        session = get_manager().open_binary(
+            path, auto_analysis=auto_analysis, options=options
+        )
+        result = {
             "success": True,
             "session": session.to_dict(),
             "message": f"Opened {session.input_path.name} (session: {session.session_id})",
         }
+        if options and has_database:
+            result["warning"] = (
+                "The loader options were ignored: the file already has an IDA "
+                "database. Delete it to load the file again with them."
+            )
+        return result
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 
-@tool
+@session_tool
 def close_binary(
     session_id: Annotated[str, "Session ID to close"],
 ) -> dict:
@@ -53,7 +87,7 @@ def close_binary(
     return {"success": False, "error": f"Session not found: {session_id}"}
 
 
-@tool
+@session_tool
 def switch_binary(
     session_id: Annotated[str, "Session ID to switch to"],
 ) -> dict:
@@ -148,7 +182,7 @@ def get_database_info() -> dict:
     return result
 
 
-@tool
+@tool(interruptible=False)
 def wait_analysis() -> dict:
     """Wait for IDA auto-analysis to complete. Call this after open_binary if you want to ensure analysis is finished."""
     import ida_auto
@@ -157,7 +191,7 @@ def wait_analysis() -> dict:
     return {"success": True, "message": "Auto-analysis completed"}
 
 
-@write_tool
+@write_tool(interruptible=False)
 def save_database(
     path: Annotated[str, "Save path (empty = current IDB path)"] = "",
 ) -> dict:
@@ -273,9 +307,9 @@ def decompile_function(
         return {"error": f"No function at {address}"}
 
     try:
-        cfunc = ida_hexrays.decompile(fn.start_ea)
+        cfunc, failure = _decompile(fn.start_ea)
         if cfunc is None:
-            return {"error": f"Decompilation failed for {address}"}
+            return {"error": f"Decompilation failed for {address}: {failure}"}
 
         return {
             "address": hex(fn.start_ea),
@@ -1937,9 +1971,11 @@ def export_function(
             result["error"] = "Hex-Rays decompiler not available for full export"
         else:
             try:
-                cfunc = ida_hexrays.decompile(fn.start_ea)
+                cfunc, failure = _decompile(fn.start_ea)
                 if cfunc:
                     result["code"] = str(cfunc)
+                else:
+                    result["error"] = f"Decompilation failed: {failure}"
             except Exception as e:
                 result["error"] = f"Decompilation failed: {e}"
 
@@ -1951,11 +1987,32 @@ def export_function(
 # ============================================================================
 
 
+# run_script's variables, kept until the open database changes
+_script_globals: dict = {}
+_script_generation: Optional[int] = None
+_SCRIPT_FILENAME = "<script>"
+_INTERRUPT_NAME = "__ida_auto_mcp_interrupt__"
+
+
 @script_tool
 def run_script(
-    script: Annotated[str, "IDAPython script code to execute"],
+    script: Annotated[
+        str,
+        "IDAPython code. Variables persist between calls until another database is opened; the value of a final expression is returned as result.",
+    ],
 ) -> dict:
-    """Execute arbitrary IDAPython code. The script can use all IDA APIs (import idaapi, idc, etc). Stdout output is captured and returned."""
+    """Execute arbitrary IDAPython code. The script can use all IDA APIs (import idaapi, idc, etc). Returns captured stdout/stderr, the value of a final expression, and the traceback if it fails."""
+    global _script_generation
+
+    generation = get_manager().generation
+    if generation != _script_generation:
+        # IDA objects from a database that has been closed must not be reused
+        _script_globals.clear()
+        _script_generation = generation
+    _script_globals.setdefault("__builtins__", __builtins__)
+    _script_globals.setdefault("__name__", "__main__")
+    _script_globals[_INTERRUPT_NAME] = ToolInterrupted
+
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     captured_out = io.StringIO()
@@ -1963,12 +2020,28 @@ def run_script(
     sys.stdout = captured_out
     sys.stderr = captured_err
 
+    result = None
     error = None
     try:
-        exec_globals = {"__builtins__": __builtins__}
-        exec(script, exec_globals)
+        tree = ast.parse(script, filename=_SCRIPT_FILENAME)
+        _reraise_interrupts(tree)
+        final = None
+        if tree.body and isinstance(tree.body[-1], ast.Expr):
+            final = ast.Expression(tree.body.pop().value)
+        # Lets tracebacks show the script's source lines
+        linecache.cache[_SCRIPT_FILENAME] = (
+            len(script),
+            None,
+            script.splitlines(True),
+            _SCRIPT_FILENAME,
+        )
+        exec(compile(tree, _SCRIPT_FILENAME, "exec"), _script_globals)
+        if final is not None:
+            result = eval(compile(final, _SCRIPT_FILENAME, "eval"), _script_globals)
+    except SystemExit as e:
+        error = f"SystemExit({e.code!r}): the script called exit()"
     except Exception as e:
-        error = f"{type(e).__name__}: {e}"
+        error = _script_traceback(e)
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -1977,7 +2050,44 @@ def run_script(
         "output": captured_out.getvalue(),
         "errors": captured_err.getvalue(),
         "error": error,
+        "result": _json_safe(result),
     }
+
+
+def _reraise_interrupts(tree: ast.Module) -> None:
+    """Give every try statement of a script a first handler that re-raises
+    ToolInterrupted, so a bare except cannot swallow a timeout."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and node.handlers:
+            anchor = node.handlers[0]
+            handler = ast.ExceptHandler(
+                type=ast.Name(id=_INTERRUPT_NAME, ctx=ast.Load()),
+                name=None,
+                body=[ast.Raise(exc=None, cause=None)],
+            )
+            node.handlers.insert(0, ast.copy_location(handler, anchor))
+    ast.fix_missing_locations(tree)
+
+
+def _script_traceback(error: BaseException) -> str:
+    """The error's traceback, from the script's first frame on."""
+    tb = traceback.TracebackException.from_exception(error)
+    frames = list(tb.stack)
+    first = next(
+        (i for i, f in enumerate(frames) if f.filename == _SCRIPT_FILENAME),
+        len(frames),
+    )
+    tb.stack = traceback.StackSummary.from_list(frames[first:])
+    return "".join(tb.format()).rstrip()
+
+
+def _json_safe(value):
+    """value itself if it serializes to JSON, else its repr()."""
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return repr(value)
 
 
 # ============================================================================
@@ -2004,7 +2114,7 @@ def infer_types(
     if ida_hexrays.init_hexrays_plugin():
         try:
             if _get_func(ea):
-                cfunc = ida_hexrays.decompile(ea)
+                cfunc, _ = _decompile(ea)
                 if cfunc and cfunc.type:
                     tif = cfunc.type
                     status = "decompiler"
@@ -2155,6 +2265,25 @@ def _invalidate_decompiler_cache(ea: int):
         pass
 
 
+def _decompile(ea: int) -> tuple:
+    """Decompile the function at ea: (cfunc, None), or (None, reason).
+
+    Call init_hexrays_plugin() first. The tool time limit cannot interrupt
+    the decompiler's native code, so on IDA 9.5+ the decompiler is given the
+    same limit and stops itself.
+    """
+    import ida_hexrays
+
+    if hasattr(ida_hexrays, "set_decompiler_timeout"):  # IDA 9.5+
+        limit = mcp.tool_timeout
+        ida_hexrays.set_decompiler_timeout(int(limit * 1000) if limit else 0)
+    failure = ida_hexrays.hexrays_failure_t()
+    cfunc = ida_hexrays.decompile(ea, failure)
+    if cfunc is None:
+        return None, failure.desc() or "unknown error"
+    return cfunc, None
+
+
 def _get_func(ea: int):
     """Function containing ea, or None.
 
@@ -2213,6 +2342,17 @@ def _fp_offset(fn, soff: int) -> int:
     if hasattr(ida_frame, "soff_to_fpoff_ea"):  # IDA 9.5+
         return ida_frame.soff_to_fpoff_ea(fn.start_ea, soff)
     return ida_frame.soff_to_fpoff(fn, soff)
+
+
+def _parse_number(text: str) -> Optional[int]:
+    """An optional number such as "0x8000000" or "4096"; None when empty."""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return int(text, 0)
+    except ValueError:
+        raise ValueError(f"Invalid number: {text!r} (use hex like 0x8000000)") from None
 
 
 def _resolve_address(addr_or_name: str) -> int:

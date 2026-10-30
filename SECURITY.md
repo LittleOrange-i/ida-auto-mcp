@@ -34,6 +34,7 @@ In scope:
 - any way for someone other than the MCP client you configured to reach the server or call its tools
 - tools that are off by default being listed or callable without `--allow-write` / `--allow-script`
 - tools that write files or modify the IDA database doing more than they document
+- `open_binary`'s loader options reaching IDA as anything but the processor, file type, base address and entry point switches, for example to run a script
 
 Not vulnerabilities:
 
@@ -73,6 +74,7 @@ Not vulnerabilities:
 - 除你配置的 MCP 客户端之外，其他任何人能够访问服务器或调用其工具的途径
 - 默认关闭的工具在未使用 `--allow-write` / `--allow-script` 时仍能被列出或调用
 - 会写文件或修改 IDA 数据库的工具做了超出其文档说明的事
+- `open_binary` 的加载选项传给 IDA 的内容超出处理器、文件类型、基址和入口点这几个开关，例如借此运行脚本
 
 不属于漏洞：
 

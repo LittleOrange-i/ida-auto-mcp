@@ -21,18 +21,21 @@ It is not the only headless option: [ida-pro-mcp](https://github.com/mrexodia/id
 - **Headless** — Uses `idalib` (IDA as a library), no GUI needed
 - **55 Analysis Tools** — Decompile, disassemble, xrefs, strings, imports, types, search, rename, patching, and more
 - **Read-Only by Default** — Tools that modify the database or run arbitrary code are off until you enable them
-- **MCP Standard** — Works with Claude Desktop, Claude Code, and any MCP-compatible client
+- **Time Limits and Cancellation** — A runaway tool call is stopped after `--timeout` seconds, or as soon as the client cancels it
+- **Careful with Databases** — Refuses a database that another IDA has open, and backs up what a crash left behind before IDA discards it
+- **Raw Firmware** — `open_binary` takes the processor, file type, base address and entry point of a raw blob
+- **MCP Standard** — Works with Claude Desktop, Claude Code, Codex, and any MCP client; tools carry MCP annotations (`readOnlyHint`, `destructiveHint`) and the server sends usage instructions
 - **Stdio + HTTP** — Stdio transport for MCP clients, token-protected HTTP for debugging
 
 ### Prerequisites
 
 1. **IDA Pro 9.0+** (with valid license), tested with IDA 9.3 and 9.5. On IDA 9.5 the server uses the address-based APIs that replace the ones 9.5 deprecates (`get_func`, `getseg`, the `func_t`-based frame functions), so it prints no `DeprecationWarning`; earlier versions keep using the original APIs.
-2. **idapro Python package** — shipped with IDA Pro:
+2. **idapro Python package** — Hex-Rays' loader for idalib. Installing this project pulls it from PyPI; you can also install the wheel shipped with IDA Pro:
    ```bash
    pip install "<IDA_INSTALL_DIR>/idalib/python/idapro-<version>-py3-none-any.whl"
    ```
-   The file name depends on the IDA release, for example `idapro-0.0.7-py3-none-any.whl` in IDA 9.3 and `idapro-0.0.10-py3-none-any.whl` in IDA 9.5. After upgrading IDA, install the wheel from the new installation and point `IDADIR` (or `--ida-dir`) at it.
-3. **IDADIR** — set via environment variable or `--ida-dir` flag
+   The file name depends on the IDA release, for example `idapro-0.0.7-py3-none-any.whl` in IDA 9.3 and `idapro-0.0.10-py3-none-any.whl` in IDA 9.5. After upgrading IDA, point `IDADIR` (or `--ida-dir`) at the new installation.
+3. **IDADIR** — set via environment variable or `--ida-dir` flag, or configure idalib once with `python "<IDA_INSTALL_DIR>/idalib/python/py-activate-idalib.py"`
 
 ### Installation
 
@@ -43,6 +46,22 @@ pip install -e .
 ```
 
 ### Quick Start
+
+#### Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace. With
+[uv](https://github.com/astral-sh/uv) on your `PATH` and IDA's location in
+`IDADIR` (or configured with `py-activate-idalib.py`), install the plugin:
+
+```bash
+claude plugin marketplace add mufeng05/ida-auto-mcp
+claude plugin install ida-auto-mcp@ida-auto-mcp
+```
+
+On Claude Code 2.1.275 or later, `/plugin install ida-auto-mcp --marketplace mufeng05/ida-auto-mcp`
+does both in one step. The plugin runs the server with its defaults: read-only
+tools and a 300-second time limit. For write tools or `run_script`, configure
+the server yourself as shown below.
 
 #### Codex (`~/.codex/config.toml`)
 
@@ -121,6 +140,9 @@ python -m ida_auto_mcp --allow-write --allow-script
 # HTTP mode for debugging (prints a bearer token on startup)
 python -m ida_auto_mcp --transport http --port 8765
 
+# Allow 10 minutes per tool call instead of 5, and log every call
+python -m ida_auto_mcp --timeout 600 --trace C:/temp/ida-auto-mcp.jsonl
+
 # Verbose logging
 python -m ida_auto_mcp -v
 ```
@@ -138,6 +160,20 @@ Add the flags to `args` in your MCP client configuration, for example `"args": [
 
 Keep both flags off while analyzing untrusted samples: strings and names inside a binary can carry prompt-injection text aimed at the agent.
 
+Each tool also carries MCP annotations: read-only tools are marked `readOnlyHint`, and the write tools and `run_script` are marked `destructiveHint`, so clients can tell them apart.
+
+### Time Limits and Cancellation
+
+A tool call may run for `--timeout` seconds (300 by default, `0` for no limit). After that the server stops it and returns an error that suggests narrowing the request. When the client cancels a call over stdio (`notifications/cancelled`, for example when you interrupt the agent), the server stops it the same way and sends no result. Python code stops at once; a call busy inside one IDA function stops when that function returns. On IDA 9.5 and later the decompiler gets the same limit and stops by itself. Opening, switching, closing and saving databases and `wait_analysis` are never interrupted, so a database is never left half opened or half saved.
+
+`--trace FILE` appends one JSON line per tool call (tool, arguments, duration, error), which helps to see what an agent did and where the time went.
+
+### Opening Databases
+
+Before opening a database, the server looks at its files. If another IDA instance has it open, for example in the IDA GUI, `open_binary` refuses with a clear error and the current session stays active. If IDA stopped without closing it (a crash), IDA would silently reopen the last saved copy and discard the files left behind; the server first copies them to `<name>.i64.crash-<time>/` and says so in the `open_binary` result.
+
+For raw firmware and other files IDA can't identify, `open_binary` takes loader options: `processor` (for example `arm`), `file_type` (for example `Binary file`), `base_address` and `entry_point`. They apply when IDA creates the file's database and are ignored once it exists.
+
 ### Tools (55 total)
 
 Tools marked *(write)* need `--allow-write`; *(script)* needs `--allow-script`.
@@ -145,7 +181,7 @@ Tools marked *(write)* need `--allow-write`; *(script)* needs `--allow-script`.
 #### Session
 | Tool | Description |
 |------|-------------|
-| `open_binary` | Open a binary for analysis (auto-analysis included) |
+| `open_binary` | Open a binary for analysis (auto-analysis included; loader options for raw firmware) |
 | `close_binary` | Close a session |
 | `switch_binary` | Switch active session |
 | `list_sessions` | List all open sessions |
@@ -239,7 +275,7 @@ Tools marked *(write)* need `--allow-write`; *(script)* needs `--allow-script`.
 #### Script
 | Tool | Description |
 |------|-------------|
-| `run_script` | Execute arbitrary IDAPython code *(script)* |
+| `run_script` | Execute arbitrary IDAPython code; variables persist between calls until another database opens, and a final expression's value is returned *(script)* |
 
 ### Multi-Binary Workflow Example
 
@@ -261,17 +297,20 @@ AI: get_xrefs_to("0x401000")                  → Checks cross-references
 ```
 ida_auto_mcp/
 ├── server.py        # CLI entry point, idapro initialization
-├── mcp_server.py    # MCP protocol implementation (stdio + HTTP)
+├── mcp_server.py    # MCP protocol implementation (stdio + HTTP), time limits
 ├── _registry.py     # Global McpServer instance + tool decorators
 ├── session.py       # Multi-binary session management via idalib
+├── idb_files.py     # Checks a database's files before IDA opens it
 └── tools.py         # 55 IDA analysis tools
 ```
 
-Tests for tool permissions and the HTTP checks need no IDA installation:
+The tests need no IDA installation. They cover tool permissions, the HTTP checks, the protocol layer (version negotiation, annotations, time limits, cancellation, the trace), `run_script`, the database file checks and loader options:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+`tests/tool_metadata.json` is a snapshot of what the server advertises to clients. After an intentional change to a tool's name, description or parameters, regenerate it with `IDA_AUTO_MCP_UPDATE_SNAPSHOT=1 python -m unittest tests.test_tool_metadata`. GitHub Actions runs the tests on Windows and Linux. Publishing a GitHub release builds the package and uploads it to PyPI, once the repository is set up as a trusted publisher on PyPI (environment `pypi`).
 
 ### Security
 
@@ -285,6 +324,7 @@ python -m unittest discover -s tests -v
 - The MCP protocol layer (`mcp_server.py`) is adapted from [zeromcp](https://github.com/mrexodia/zeromcp) by Duncan Ogilvie (MIT License); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - Many tool names and features follow [ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp).
 - The control-flow, struct and patching tools were first modeled on [ida-mcp-rs](https://github.com/blacktop/ida-mcp-rs).
+- The database file checks and the way tool calls are interrupted follow Hex-Rays' [ida-nexus](https://github.com/HexRaysSA/ida-nexus) (MIT License), the library behind the official [IDA MCP server](https://github.com/HexRaysSA/ida-mcp).
 
 ### License
 
@@ -309,18 +349,21 @@ IDA Auto MCP 是直接基于 IDA 无头分析库 `idalib` 的小型 MCP 服务�
 - **无需 GUI** — 使用 `idalib`（IDA 库模式），不需要打开 IDA 界面
 - **55 个分析工具** — 反编译、反汇编、交叉引用、字符串、导入表、类型系统、搜索、重命名、补丁等
 - **默认只读** — 会修改数据库或执行任意代码的工具默认关闭，需要显式开启
-- **MCP 标准协议** — 支持 Claude Desktop、Claude Code 及所有 MCP 兼容客户端
+- **超时与取消** — 失控的工具调用会在 `--timeout` 秒后停止，客户端取消时也会立即停止
+- **谨慎对待数据库** — 拒绝打开正被其他 IDA 使用的数据库；IDA 丢弃崩溃残留文件之前先做备份
+- **原始固件** — `open_binary` 可以指定原始数据块的处理器、文件类型、基址和入口点
+- **MCP 标准协议** — 支持 Claude Desktop、Claude Code、Codex 及所有 MCP 客户端；工具带有 MCP 标注（`readOnlyHint`、`destructiveHint`），服务器会下发使用说明
 - **双传输模式** — stdio 模式用于 MCP 客户端，带令牌认证的 HTTP 模式用于调试
 
 ### 前置要求
 
 1. **IDA Pro 9.0+**（需要有效许可证），已在 IDA 9.3 和 9.5 上测试。在 IDA 9.5 上，服务器改用基于地址的新接口，替代 9.5 弃用的接口（`get_func`、`getseg`、基于 `func_t` 的栈帧函数等），因此不会输出 `DeprecationWarning`；更早的版本继续使用原有接口。
-2. **idapro Python 包** — IDA Pro 安装目录自带：
+2. **idapro Python 包** — Hex-Rays 提供的 idalib 加载器。安装本项目时会自动从 PyPI 安装；也可以安装 IDA Pro 自带的 wheel：
    ```bash
    pip install "<IDA安装目录>/idalib/python/idapro-<版本>-py3-none-any.whl"
    ```
-   文件名随 IDA 版本而变，例如 IDA 9.3 中为 `idapro-0.0.7-py3-none-any.whl`，IDA 9.5 中为 `idapro-0.0.10-py3-none-any.whl`。升级 IDA 后，请安装新安装目录中的 wheel，并把 `IDADIR`（或 `--ida-dir`）指向新的安装目录。
-3. **IDADIR** — 通过环境变量或 `--ida-dir` 参数设置 IDA 安装路径
+   文件名随 IDA 版本而变，例如 IDA 9.3 中为 `idapro-0.0.7-py3-none-any.whl`，IDA 9.5 中为 `idapro-0.0.10-py3-none-any.whl`。升级 IDA 后，请把 `IDADIR`（或 `--ida-dir`）指向新的安装目录。
+3. **IDADIR** — 通过环境变量或 `--ida-dir` 参数设置 IDA 安装路径，也可以运行一次 `python "<IDA安装目录>/idalib/python/py-activate-idalib.py"` 为 idalib 配置好
 
 ### 安装
 
@@ -331,6 +374,21 @@ pip install -e .
 ```
 
 ### 快速开始
+
+#### Claude Code 插件
+
+本仓库同时也是一个 Claude Code 插件 marketplace。确保
+[uv](https://github.com/astral-sh/uv) 在 `PATH` 中，并已通过 `IDADIR`
+（或 `py-activate-idalib.py`）配置好 IDA 路径，然后安装插件：
+
+```bash
+claude plugin marketplace add mufeng05/ida-auto-mcp
+claude plugin install ida-auto-mcp@ida-auto-mcp
+```
+
+在 Claude Code 2.1.275 及以上版本中，`/plugin install ida-auto-mcp --marketplace mufeng05/ida-auto-mcp`
+可以一步完成。插件以默认设置启动服务器：只提供只读工具，单次调用上限 300 秒。
+如需写入类工具或 `run_script`，请按下文自行配置服务器。
 
 #### Codex 配置 (`~/.codex/config.toml`)
 
@@ -407,6 +465,9 @@ python -m ida_auto_mcp --allow-write --allow-script
 # HTTP 模式（调试用，启动时会打印 Bearer 令牌）
 python -m ida_auto_mcp --transport http --port 8765
 
+# 单次工具调用上限改为 10 分钟（默认 5 分钟），并记录每次调用
+python -m ida_auto_mcp --timeout 600 --trace C:/temp/ida-auto-mcp.jsonl
+
 # 详细日志
 python -m ida_auto_mcp -v
 ```
@@ -424,6 +485,20 @@ python -m ida_auto_mcp -v
 
 分析不可信样本时请保持这两个参数关闭：二进制中的字符串和名称可能藏有针对 AI 智能体的提示注入内容。
 
+每个工具还带有 MCP 标注：只读工具标记为 `readOnlyHint`，写入类工具和 `run_script` 标记为 `destructiveHint`，客户端可以据此区分它们。
+
+### 超时与取消
+
+单次工具调用最多运行 `--timeout` 秒（默认 300，`0` 表示不限制）。超时后服务器会停止该调用，并返回错误，提示缩小请求范围。客户端通过 stdio 取消调用时（`notifications/cancelled`，例如你中断了智能体），服务器同样会停止它，且不再返回结果。Python 代码会立即停下；正在执行某个 IDA 函数的调用，要等该函数返回后才停下。在 IDA 9.5 及以上版本中，反编译器也会使用同一上限并自行中止。打开、切换、关闭、保存数据库以及 `wait_analysis` 永远不会被中断，因此不会出现数据库只打开或保存了一半的情况。
+
+`--trace FILE` 会为每次工具调用追加一行 JSON（工具、参数、耗时、错误），便于查看智能体做了什么、时间花在哪里。
+
+### 打开数据库
+
+打开数据库之前，服务器会先检查它的文件。如果另一个 IDA 实例（例如 IDA 界面）正打开着它，`open_binary` 会给出明确的错误并拒绝打开，当前会话保持不变。如果上次 IDA 没有正常关闭它（例如崩溃），IDA 会静默地重新打开上次保存的副本并丢弃留下的文件；服务器会先把这些文件复制到 `<名称>.i64.crash-<时间>/`，并在 `open_binary` 的结果中说明。
+
+对于原始固件等 IDA 无法识别的文件，`open_binary` 支持加载选项：`processor`（例如 `arm`）、`file_type`（例如 `Binary file`）、`base_address` 和 `entry_point`。它们只在 IDA 为该文件新建数据库时生效，数据库已存在时会被忽略。
+
 ### 工具列表（共 55 个）
 
 标注 *（写入）* 的工具需要 `--allow-write`；标注 *（脚本）* 的需要 `--allow-script`。
@@ -431,7 +506,7 @@ python -m ida_auto_mcp -v
 #### 会话管理
 | 工具 | 说明 |
 |------|------|
-| `open_binary` | 打开二进制文件进行分析（含自动分析） |
+| `open_binary` | 打开二进制文件进行分析（含自动分析；原始固件可指定加载选项） |
 | `close_binary` | 关闭分析会话 |
 | `switch_binary` | 切换到其他会话 |
 | `list_sessions` | 列出所有打开的会话 |
@@ -525,7 +600,7 @@ python -m ida_auto_mcp -v
 #### 脚本
 | 工具 | 说明 |
 |------|------|
-| `run_script` | 执行 IDAPython 脚本 *（脚本）* |
+| `run_script` | 执行 IDAPython 脚本；变量在多次调用间保留（直到打开其他数据库），并返回最后一个表达式的值 *（脚本）* |
 
 ### 多文件分析示例
 
@@ -547,17 +622,20 @@ AI: get_xrefs_to("0x401000")                  → 查看交叉引用
 ```
 ida_auto_mcp/
 ├── server.py        # 命令行入口，idapro 初始化
-├── mcp_server.py    # MCP 协议实现（stdio + HTTP 传输）
+├── mcp_server.py    # MCP 协议实现（stdio + HTTP 传输）、超时控制
 ├── _registry.py     # 全局 McpServer 实例 + 工具装饰器
 ├── session.py       # 多文件会话管理（基于 idalib）
+├── idb_files.py     # IDA 打开数据库前检查其文件
 └── tools.py         # 55 个 IDA 分析工具
 ```
 
-工具权限和 HTTP 检查的测试不需要安装 IDA：
+测试不需要安装 IDA，覆盖工具权限、HTTP 检查、协议层（版本协商、标注、超时、取消、调用记录）、`run_script`、数据库文件检查和加载选项：
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+`tests/tool_metadata.json` 是服务器向客户端公布的元数据快照。有意修改工具的名称、说明或参数后，运行 `IDA_AUTO_MCP_UPDATE_SNAPSHOT=1 python -m unittest tests.test_tool_metadata` 重新生成。GitHub Actions 会在 Windows 和 Linux 上运行这些测试。在 PyPI 上把本仓库配置为可信发布者（环境名 `pypi`）后，发布 GitHub Release 时会自动构建并上传到 PyPI。
 
 ### 安全
 
@@ -571,6 +649,7 @@ python -m unittest discover -s tests -v
 - MCP 协议层（`mcp_server.py`）改编自 Duncan Ogilvie 的 [zeromcp](https://github.com/mrexodia/zeromcp)（MIT 许可证），详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 许多工具的命名和功能参考了 [ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp)。
 - 控制流、结构体和补丁类工具最初参考 [ida-mcp-rs](https://github.com/blacktop/ida-mcp-rs) 实现。
+- 数据库文件检查和工具调用的中断方式参考了 Hex-Rays 的 [ida-nexus](https://github.com/HexRaysSA/ida-nexus)（MIT 许可证），它是官方 [IDA MCP 服务器](https://github.com/HexRaysSA/ida-mcp) 的底层库。
 
 ### 许可
 

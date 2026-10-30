@@ -12,3 +12,4 @@ build/
 *.til
 .env
 .claude/settings.local.json
+.venv/

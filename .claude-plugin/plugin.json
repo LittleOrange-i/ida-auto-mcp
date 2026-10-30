@@ -1,0 +1,23 @@
+{
+  "name": "ida-auto-mcp",
+  "displayName": "IDA Auto MCP",
+  "version": "1.0.1",
+  "description": "Headless IDA Pro analysis: decompile, disassemble, xrefs, strings, imports and types. Read-only tools only.",
+  "author": {
+    "name": "mufeng05",
+    "url": "https://github.com/mufeng05"
+  },
+  "homepage": "https://github.com/mufeng05/ida-auto-mcp",
+  "repository": "https://github.com/mufeng05/ida-auto-mcp",
+  "license": "MIT",
+  "keywords": ["ida", "ida-pro", "idalib", "reverse-engineering", "decompiler", "mcp"],
+  "mcpServers": {
+    "ida-auto-mcp": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}", "ida-auto-mcp"],
+      "env": {
+        "IDADIR": "${IDADIR:-}"
+      }
+    }
+  }
+}

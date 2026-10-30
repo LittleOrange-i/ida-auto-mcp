@@ -10,6 +10,21 @@ requires-python = ">=3.10"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "mufeng05" }]
+keywords = ["ida", "ida-pro", "idalib", "mcp", "reverse-engineering", "decompiler"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
+# Hex-Rays' loader for IDA's idalib; it finds IDA through IDADIR
+dependencies = ["idapro"]
+
+[project.urls]
+Repository = "https://github.com/mufeng05/ida-auto-mcp"
+Issues = "https://github.com/mufeng05/ida-auto-mcp/issues"
 
 [project.scripts]
 ida-auto-mcp = "ida_auto_mcp.server:main"

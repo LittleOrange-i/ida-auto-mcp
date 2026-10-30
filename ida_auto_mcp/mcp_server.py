@@ -7,15 +7,19 @@ Adapted from zeromcp (https://github.com/mrexodia/zeromcp),
 Copyright (c) 2025 Duncan Ogilvie, MIT License. See THIRD_PARTY_NOTICES.md.
 """
 
+import ctypes
 import hmac
 import ipaddress
 import json
+import queue
 import secrets
 import socket
 import sys
+import threading
 import time
 import inspect
 import traceback
+from datetime import datetime, timezone
 from typing import (
     Any,
     BinaryIO,
@@ -34,18 +38,112 @@ from urllib.parse import urlsplit
 # Largest request body the HTTP transport accepts
 MAX_HTTP_BODY = 16 * 1024 * 1024
 
+# MCP revisions this server speaks, newest first
+PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+# First revision with a top-level tool title; earlier ones read annotations.title
+_TOOL_TITLE_SINCE = "2025-06-18"
+
+# Returned by a handler whose request must get no response (cancelled)
+_NO_RESPONSE = object()
+
+
+class ToolInterrupted(BaseException):
+    """Raised in a tool's thread to stop it: time limit or client cancellation.
+
+    Derives from BaseException so that tools' ``except Exception`` handlers
+    don't swallow it.
+    """
+
+
+_set_async_exc = ctypes.pythonapi.PyThreadState_SetAsyncExc
+_set_async_exc.argtypes = (ctypes.c_ulong, ctypes.c_void_p)
+_set_async_exc.restype = ctypes.c_int
+
+
+class _ToolRun:
+    """A running tool call that other threads can interrupt.
+
+    interrupt() raises ToolInterrupted in the tool's thread, where Python code
+    stops at its next bytecode; native code (inside IDA) finishes its current
+    call first. finish() must run in the tool's thread once the call is over.
+    The approach follows the execution runtime of Hex-Rays' ida-nexus.
+    """
+
+    def __init__(self):
+        self.reason: str | None = None
+        self._thread_id = threading.get_ident()
+        self._lock = threading.Lock()
+        self._running = True
+
+    def interrupt(self, reason: str) -> None:
+        """Stop the call ("timeout" or "cancelled"); callable from any thread."""
+        with self._lock:
+            # At most one ToolInterrupted per run, and none once it finished
+            if not self._running or self.reason is not None:
+                return
+            self.reason = reason
+            _set_async_exc(self._thread_id, id(ToolInterrupted))
+
+    def finish(self) -> None:
+        # The ToolInterrupted may still be pending, or arrive while this runs;
+        # both steps are idempotent, so they are just repeated
+        while True:
+            try:
+                with self._lock:
+                    self._running = False
+                if self.reason is not None:
+                    _set_async_exc(self._thread_id, None)
+                return
+            except ToolInterrupted:
+                continue
+
+
+def _reported_error(result: Any) -> str | None:
+    """The failure a tool reported by returning {"error": ...} or
+    {"success": False}, if any."""
+    if isinstance(result, dict):
+        if result.get("error"):
+            return str(result["error"])
+        if result.get("success") is False:
+            return "success: false"
+    return None
+
+
+def _tool_title(name: str) -> str:
+    """Human-readable title for a tool, e.g. "Decompile function"."""
+    return name.replace("_", " ").capitalize()
+
 
 class McpServer:
     """MCP server with stdio and HTTP transports."""
 
-    def __init__(self, name: str, version: str = "1.0.0"):
+    def __init__(
+        self, name: str, version: str = "1.0.0", instructions: str | None = None
+    ):
         self.name = name
         self.version = version
+        # Told to clients in initialize: what the server is for, how to use it
+        self.instructions = instructions
         self._tools: dict[str, Callable] = {}
         # Tools outside the always-on set: tool name -> permission group
         self._tool_groups: dict[str, str] = {}
+        # MCP behavior hints (readOnlyHint, destructiveHint, ...) per tool
+        self._tool_annotations: dict[str, dict] = {}
+        # Tools that always run to completion, even past tool_timeout
+        self._uninterruptible: set[str] = set()
         # Permission groups switched on at startup (e.g. "write", "script")
         self.enabled_groups: set[str] = set()
+        # Seconds a tool may run before it is interrupted; None for no limit
+        self.tool_timeout: float | None = None
+        # JSON Lines file recording each tool call, or None
+        self.trace_path: str | None = None
+        # Negotiated in initialize; the newest revision until then
+        self.protocol_version = PROTOCOL_VERSIONS[0]
+        # The request being dispatched and its interruptible tool run, for
+        # cancellations that arrive on the stdio reader thread
+        self._active_lock = threading.Lock()
+        self._active_request_id: Any = None
+        self._active_run: _ToolRun | None = None
 
         self._handlers: dict[str, Callable] = {
             "initialize": self._handle_initialize,
@@ -60,15 +158,27 @@ class McpServer:
             "prompts/list": lambda **kw: {"prompts": []},
         }
 
-    def tool(self, func: Callable, group: str | None = None) -> Callable:
+    def tool(
+        self,
+        func: Callable,
+        group: str | None = None,
+        annotations: dict | None = None,
+        interruptible: bool = True,
+    ) -> Callable:
         """Register a function as an MCP tool.
 
         A tool registered with a group is only listed and callable while
-        that group is in enabled_groups.
+        that group is in enabled_groups. annotations are MCP behavior hints
+        such as readOnlyHint. A tool that is not interruptible runs to
+        completion even past tool_timeout or a client's cancellation.
         """
         self._tools[func.__name__] = func
         if group:
             self._tool_groups[func.__name__] = group
+        if annotations:
+            self._tool_annotations[func.__name__] = dict(annotations)
+        if not interruptible:
+            self._uninterruptible.add(func.__name__)
         return func
 
     def is_enabled(self, name: str) -> bool:
@@ -113,14 +223,16 @@ class McpServer:
                 "id": request_id,
             }
 
+        with self._active_lock:
+            self._active_request_id = request_id
         try:
             if isinstance(params, list):
                 result = handler(*params)
             else:
                 result = self._call_with_params(handler, params)
 
-            if request_id is None:
-                return None  # Notification - no response
+            if request_id is None or result is _NO_RESPONSE:
+                return None  # Notification, or a cancelled request
             return {"jsonrpc": "2.0", "result": result, "id": request_id}
         except Exception as e:
             if request_id is None:
@@ -134,6 +246,9 @@ class McpServer:
                 },
                 "id": request_id,
             }
+        finally:
+            with self._active_lock:
+                self._active_request_id = None
 
     def _call_with_params(self, func: Callable, params: dict) -> Any:
         """Call a function mapping dict params to its signature."""
@@ -157,11 +272,19 @@ class McpServer:
         clientInfo=None,
         **kw,
     ):
-        return {
-            "protocolVersion": "2024-11-05",
+        # Answer with the client's revision when we speak it, else our newest
+        if protocolVersion in PROTOCOL_VERSIONS:
+            self.protocol_version = protocolVersion
+        else:
+            self.protocol_version = PROTOCOL_VERSIONS[0]
+        result = {
+            "protocolVersion": self.protocol_version,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": self.name, "version": self.version},
         }
+        if self.instructions:
+            result["instructions"] = self.instructions
+        return result
 
     def _handle_tools_list(self, **kw):
         return {
@@ -193,23 +316,136 @@ class McpServer:
                 ],
                 "isError": True,
             }
+        started = time.monotonic()
         try:
-            result = self._call_with_params(func, arguments or {})
-            text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
-            return {
-                "content": [{"type": "text", "text": text}],
-                "structuredContent": (
-                    result if isinstance(result, dict) else {"result": result}
-                ),
-                "isError": False,
-            }
+            result, interrupted = self._run_tool(name, func, arguments or {})
         except Exception as e:
+            self._trace_call(name, arguments, started, f"{type(e).__name__}: {e}")
             return {
                 "content": [
                     {"type": "text", "text": f"Error: {e}\n{traceback.format_exc()}"}
                 ],
                 "isError": True,
             }
+        if interrupted == "cancelled":
+            self._trace_call(name, arguments, started, "cancelled by the client")
+            return _NO_RESPONSE
+        if interrupted is not None:
+            if interrupted == "timeout":
+                message = (
+                    f"Tool {name} timed out after {self.tool_timeout:g}s and was "
+                    "stopped. Narrow the request (a filter, a smaller count or "
+                    "address range) or restart the server with a larger --timeout."
+                )
+            else:
+                message = f"Tool {name} was interrupted."
+            self._trace_call(name, arguments, started, message)
+            return {"content": [{"type": "text", "text": message}], "isError": True}
+
+        error = _reported_error(result)
+        self._trace_call(name, arguments, started, error)
+        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": (
+                result if isinstance(result, dict) else {"result": result}
+            ),
+            "isError": error is not None,
+        }
+
+    def _run_tool(self, name: str, func: Callable, arguments: dict) -> tuple:
+        """Call a tool, stopping it on timeout or client cancellation.
+
+        Returns (result, None), or (None, reason) when it was interrupted
+        with reason "timeout" or "cancelled".
+        """
+        if name in self._uninterruptible:
+            return self._call_with_params(func, arguments), None
+
+        run = _ToolRun()
+        timer = None
+        started = completed = False
+        result = error = None
+        # Once the run is armed, its one ToolInterrupted can be delivered late,
+        # anywhere in this loop; the loop absorbs it and still finishes the run
+        while True:
+            try:
+                if not started:
+                    started = True
+                    with self._active_lock:
+                        self._active_run = run
+                    if self.tool_timeout:
+                        timer = threading.Timer(
+                            self.tool_timeout, run.interrupt, ("timeout",)
+                        )
+                        timer.daemon = True
+                        timer.start()
+                    try:
+                        result = self._call_with_params(func, arguments)
+                        completed = True
+                    except ToolInterrupted:
+                        pass
+                    except Exception as e:
+                        error = e
+                run.finish()
+                break
+            except ToolInterrupted:
+                continue
+        if timer is not None:
+            timer.cancel()
+        with self._active_lock:
+            self._active_run = None
+
+        if completed:
+            return result, None
+        if error is not None:
+            raise error
+        # No reason: ToolInterrupted was raised by the tool itself
+        return None, run.reason or "interrupted"
+
+    def _cancel_from_message(self, line: bytes) -> None:
+        """Interrupt the running tool if this message cancels its request."""
+        try:
+            message = json.loads(line)
+            if message.get("method") != "notifications/cancelled":
+                return
+            request_id = (message.get("params") or {}).get("requestId")
+        except (ValueError, AttributeError, RecursionError):
+            return
+        with self._active_lock:
+            run = self._active_run
+            if (
+                run is not None
+                and request_id is not None
+                and request_id == self._active_request_id
+            ):
+                run.interrupt("cancelled")
+
+    def _trace_call(
+        self, name: str, arguments: dict | None, started: float, error: str | None
+    ) -> None:
+        """Append one tool call to the JSON Lines trace, when enabled."""
+        if not self.trace_path:
+            return
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "tool": name,
+            "arguments": arguments or {},
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            "is_error": error is not None,
+        }
+        if error is not None:
+            record["error"] = error
+        try:
+            with open(self.trace_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except OSError as e:
+            print(
+                f"[ida-auto-mcp] Cannot write trace {self.trace_path}: {e}; "
+                "tracing disabled",
+                file=sys.stderr,
+            )
+            self.trace_path = None
 
     def _handle_resources_read(self, uri: str, **kw):
         return {
@@ -240,7 +476,7 @@ class McpServer:
             if not param or param.default is inspect.Parameter.empty:
                 required.append(param_name)
 
-        return {
+        schema = {
             "name": name,
             "description": (func.__doc__ or f"Tool: {name}").strip(),
             "inputSchema": {
@@ -249,6 +485,14 @@ class McpServer:
                 "required": required,
             },
         }
+        annotations = dict(self._tool_annotations.get(name, {}))
+        if self.protocol_version >= _TOOL_TITLE_SINCE:
+            schema["title"] = _tool_title(name)
+        else:
+            annotations["title"] = _tool_title(name)
+        if annotations:
+            schema["annotations"] = annotations
+        return schema
 
     def _type_to_json_schema(self, py_type: Any) -> dict:
         """Convert Python type hint to JSON Schema."""
@@ -302,18 +546,43 @@ class McpServer:
     # === Transports ===
 
     def stdio(self, stdin: BinaryIO | None = None, stdout: BinaryIO | None = None):
-        """Run MCP server over stdio (one JSON-RPC message per line)."""
+        """Run MCP server over stdio (one JSON-RPC message per line).
+
+        A reader thread keeps receiving while a tool runs, so that a client's
+        notifications/cancelled can interrupt the tool in progress. Messages
+        are still handled one at a time, in order.
+        """
         stdin = stdin or sys.stdin.buffer
         stdout = stdout or sys.stdout.buffer
+        messages: queue.Queue = queue.Queue()
 
+        def read_messages():
+            try:
+                while True:
+                    line = stdin.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if b"notifications/cancelled" in line:
+                        self._cancel_from_message(line)
+                    messages.put(line)
+            except (OSError, ValueError):
+                pass
+            finally:
+                messages.put(None)  # end of input
+
+        threading.Thread(target=read_messages, name="mcp-stdin", daemon=True).start()
         while True:
             try:
-                line = stdin.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if not line:
+                try:
+                    # A timeout keeps the main thread responsive to signals
+                    line = messages.get(timeout=0.5)
+                except queue.Empty:
                     continue
+                if line is None:
+                    break
                 data = self._respond(line)
                 if data is not None:
                     stdout.write(data + b"\n")
@@ -328,7 +597,7 @@ class McpServer:
             response = self.dispatch(message)
             if response is None:
                 return None
-            return json.dumps(response).encode("utf-8")
+            return json.dumps(response, default=str).encode("utf-8")
         except Exception as e:
             return json.dumps(
                 {
