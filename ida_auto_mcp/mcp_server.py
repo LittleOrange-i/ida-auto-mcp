@@ -478,7 +478,11 @@ class McpServer:
 
         schema = {
             "name": name,
-            "description": (func.__doc__ or f"Tool: {name}").strip(),
+            # cleandoc: Python 3.13 removes docstring indentation, older
+            # versions keep it
+            "description": (
+                inspect.cleandoc(func.__doc__) if func.__doc__ else f"Tool: {name}"
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": properties,
