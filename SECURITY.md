@@ -24,7 +24,7 @@ I will acknowledge your report as soon as I can, keep you informed while it is c
 
 ### Supported versions
 
-There are no tagged releases. Security fixes go to the latest commit on `master`. Please check that the issue still reproduces there.
+Releases are tagged on GitHub and published on [PyPI](https://pypi.org/project/ida-auto-mcp/). Security fixes go to `master` first and ship in the next release. Please check that the issue still reproduces on the latest commit of `master`.
 
 ### Scope
 
@@ -64,7 +64,7 @@ Not vulnerabilities:
 
 ### 支持的版本
 
-本项目没有打标签的发布版本。安全修复只进入 `master` 分支的最新提交，报告前请先确认问题在最新提交上仍能复现。
+发布版本会在 GitHub 上打标签，并发布到 [PyPI](https://pypi.org/project/ida-auto-mcp/)。安全修复先进入 `master` 分支，随下一个版本发布。报告前请先确认问题在 `master` 的最新提交上仍能复现。
 
 ### 范围
 
