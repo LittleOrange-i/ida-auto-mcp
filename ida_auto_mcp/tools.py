@@ -136,9 +136,9 @@ def get_database_info() -> dict:
         min_ea = segs[0]
         max_ea = 0
         for seg_ea in segs:
-            seg = idaapi.getseg(seg_ea)
-            if seg and seg.end_ea > max_ea:
-                max_ea = seg.end_ea
+            seg = _get_segment(seg_ea)
+            if seg and seg["end"] > max_ea:
+                max_ea = seg["end"]
         result["min_address"] = hex(min_ea)
         result["max_address"] = hex(max_ea)
 
@@ -191,11 +191,10 @@ def list_functions(
     """List functions in the binary with optional name filtering and pagination."""
     import idautils
     import ida_funcs
-    import idaapi
 
     all_funcs = []
     for ea in idautils.Functions():
-        fn = idaapi.get_func(ea)
+        fn = _get_func(ea)
         if not fn:
             continue
         name = ida_funcs.get_func_name(ea) or f"sub_{ea:X}"
@@ -234,13 +233,12 @@ def get_function_info(
     address: Annotated[str, "Function address (hex like 0x401000) or name"],
 ) -> dict:
     """Get detailed information about a specific function (address, size, prototype, etc.)."""
-    import idaapi
     import ida_funcs
     import ida_nalt
     import ida_typeinf
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -263,7 +261,6 @@ def decompile_function(
     address: Annotated[str, "Function address (hex) or name to decompile"],
 ) -> dict:
     """Decompile a function to C pseudocode using Hex-Rays decompiler. Requires Hex-Rays license."""
-    import idaapi
     import ida_hexrays
     import ida_funcs
 
@@ -271,7 +268,7 @@ def decompile_function(
         return {"error": "Hex-Rays decompiler not available"}
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -302,7 +299,7 @@ def disassemble_function(
     import idautils
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
 
     lines = []
     if fn:
@@ -357,7 +354,6 @@ def get_xrefs_to(
 ) -> dict:
     """Get cross-references TO an address - shows what code references this location."""
     import idautils
-    import idaapi
     import ida_funcs
     import ida_xref
 
@@ -366,7 +362,7 @@ def get_xrefs_to(
     for xref in idautils.XrefsTo(ea):
         if len(xrefs) >= max_results:
             break
-        fn = idaapi.get_func(xref.frm)
+        fn = _get_func(xref.frm)
         xrefs.append(
             {
                 "from_address": hex(xref.frm),
@@ -386,7 +382,6 @@ def get_xrefs_from(
 ) -> dict:
     """Get cross-references FROM an address - shows what this code references."""
     import idautils
-    import idaapi
     import ida_funcs
 
     ea = _resolve_address(address)
@@ -394,7 +389,7 @@ def get_xrefs_from(
     for xref in idautils.XrefsFrom(ea):
         if len(xrefs) >= max_results:
             break
-        fn = idaapi.get_func(xref.to)
+        fn = _get_func(xref.to)
         xrefs.append(
             {
                 "to_address": hex(xref.to),
@@ -418,17 +413,17 @@ def list_strings(
     offset: Annotated[int, "Starting index for pagination"] = 0,
     count: Annotated[int, "Maximum results (default 100)"] = 100,
 ) -> dict:
-    """List strings found in the binary with optional filtering."""
+    """List strings found in the binary with optional filtering. Strings marked synthetic (IDA 9.5+) exist only in the code, e.g. built from immediates, so their text is not stored at their address."""
     import idautils
 
     all_strings = []
     for s in idautils.Strings():
         if s is None:
             continue
-        text = str(s)
-        all_strings.append(
-            {"address": hex(s.ea), "text": text, "length": s.length}
-        )
+        item = {"address": hex(s.ea), "text": str(s), "length": s.length}
+        if _is_synthetic_string(s):
+            item["synthetic"] = True
+        all_strings.append(item)
 
     if filter_str:
         pattern = filter_str.lower()
@@ -459,7 +454,10 @@ def search_strings(
             continue
         text = str(s)
         if compiled.search(text):
-            matches.append({"address": hex(s.ea), "text": text})
+            match = {"address": hex(s.ea), "text": text}
+            if _is_synthetic_string(s):
+                match["synthetic"] = True
+            matches.append(match)
             if len(matches) >= max_results:
                 break
 
@@ -536,21 +534,20 @@ def list_exports() -> dict:
 def list_segments() -> dict:
     """List memory segments/sections of the binary."""
     import idautils
-    import idaapi
 
     segments = []
     for ea in idautils.Segments():
-        seg = idaapi.getseg(ea)
+        seg = _get_segment(ea)
         if not seg:
             continue
         segments.append(
             {
-                "start": hex(seg.start_ea),
-                "end": hex(seg.end_ea),
-                "name": idaapi.get_segm_name(seg),
-                "size": seg.end_ea - seg.start_ea,
-                "permissions": _seg_perms(seg),
-                "class": idaapi.get_segm_class(seg),
+                "start": hex(seg["start"]),
+                "end": hex(seg["end"]),
+                "name": seg["name"],
+                "size": seg["end"] - seg["start"],
+                "permissions": seg["permissions"],
+                "class": seg["class"],
             }
         )
     return {"segments": segments, "count": len(segments)}
@@ -586,9 +583,9 @@ def search_bytes(
 
     max_ea = 0
     for seg_ea in idautils.Segments():
-        seg = idaapi.getseg(seg_ea)
-        if seg and seg.end_ea > max_ea:
-            max_ea = seg.end_ea
+        seg = _get_segment(seg_ea)
+        if seg and seg["end"] > max_ea:
+            max_ea = seg["end"]
 
     if max_ea == 0:
         return {"error": "No segments found", "matches": [], "count": 0}
@@ -760,12 +757,11 @@ def get_callers(
 ) -> dict:
     """Find all functions that CALL this function. Essential for understanding who uses a function."""
     import idautils
-    import idaapi
     import ida_funcs
     import ida_xref
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -775,7 +771,7 @@ def get_callers(
         if len(callers) >= max_results:
             break
         if xref.type in (ida_xref.fl_CN, ida_xref.fl_CF):
-            caller_fn = idaapi.get_func(xref.frm)
+            caller_fn = _get_func(xref.frm)
             if caller_fn and caller_fn.start_ea not in seen:
                 seen.add(caller_fn.start_ea)
                 callers.append(
@@ -801,12 +797,11 @@ def get_callees(
 ) -> dict:
     """Find all functions CALLED BY this function. Shows what a function depends on."""
     import idautils
-    import idaapi
     import ida_funcs
     import ida_xref
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -817,7 +812,7 @@ def get_callees(
             if len(callees) >= max_results:
                 break
             if xref.type in (ida_xref.fl_CN, ida_xref.fl_CF):
-                target_fn = idaapi.get_func(xref.to)
+                target_fn = _get_func(xref.to)
                 if target_fn and target_fn.start_ea not in seen:
                     seen.add(target_fn.start_ea)
                     callees.append(
@@ -844,13 +839,12 @@ def get_callgraph(
 ) -> dict:
     """Build a call graph starting from a function, exploring callees up to max_depth. Returns nodes and edges for visualization."""
     import idautils
-    import idaapi
     import ida_funcs
     import ida_xref
     from collections import deque
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -868,14 +862,14 @@ def get_callgraph(
         if depth >= max_depth or len(nodes) >= max_nodes:
             continue
 
-        cur_fn = idaapi.get_func(cur_ea)
+        cur_fn = _get_func(cur_ea)
         if not cur_fn:
             continue
 
         for head in idautils.Heads(cur_fn.start_ea, cur_fn.end_ea):
             for xref in idautils.XrefsFrom(head):
                 if xref.type in (ida_xref.fl_CN, ida_xref.fl_CF):
-                    target_fn = idaapi.get_func(xref.to)
+                    target_fn = _get_func(xref.to)
                     if target_fn:
                         t_ea = target_fn.start_ea
                         edges.append({"from": hex(cur_ea), "to": hex(t_ea)})
@@ -900,12 +894,11 @@ def get_basic_blocks(
     address: Annotated[str, "Function address (hex) or name"],
 ) -> dict:
     """Get the basic blocks (control flow graph) of a function. Each block has start/end addresses and successor/predecessor relationships."""
-    import idaapi
     import ida_funcs
     import ida_gdl
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -920,17 +913,19 @@ def get_basic_blocks(
         ida_gdl.fcb_error: "error",
     }
 
-    cfg = ida_gdl.FlowChart(fn)
+    fc = _flow_chart(fn.start_ea)
     blocks = []
-    for block in cfg:
-        succs = [hex(s.start_ea) for s in block.succs()]
-        preds = [hex(p.start_ea) for p in block.preds()]
+    for i in range(fc.size()):
+        block = fc[i]
+        block_type = fc.calc_block_type(i)
+        succs = [hex(fc[fc.succ(i, j)].start_ea) for j in range(fc.nsucc(i))]
+        preds = [hex(fc[fc.pred(i, j)].start_ea) for j in range(fc.npred(i))]
         blocks.append(
             {
                 "start": hex(block.start_ea),
                 "end": hex(block.end_ea),
                 "size": block.end_ea - block.start_ea,
-                "type": _BLOCK_TYPES.get(block.type, f"unknown_{block.type}"),
+                "type": _BLOCK_TYPES.get(block_type, f"unknown_{block_type}"),
                 "successors": succs,
                 "predecessors": preds,
             }
@@ -958,16 +953,16 @@ def get_address_info(
 
     result = {"address": hex(ea)}
 
-    seg = idaapi.getseg(ea)
+    seg = _get_segment(ea)
     if seg:
         result["segment"] = {
-            "name": idaapi.get_segm_name(seg),
-            "start": hex(seg.start_ea),
-            "end": hex(seg.end_ea),
-            "permissions": _seg_perms(seg),
+            "name": seg["name"],
+            "start": hex(seg["start"]),
+            "end": hex(seg["end"]),
+            "permissions": seg["permissions"],
         }
 
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if fn:
         result["function"] = {
             "address": hex(fn.start_ea),
@@ -1010,8 +1005,9 @@ def list_structs(
             continue
         if not (tif.is_struct() or tif.is_union()):
             continue
+        # None for an unnamed type (IDA 9.5 documents the None return)
         name = tif.get_type_name()
-        if filter_str and filter_str.lower() not in name.lower():
+        if filter_str and filter_str.lower() not in (name or "").lower():
             continue
 
         udt = ida_typeinf.udt_type_data_t()
@@ -1073,19 +1069,17 @@ def get_struct_info(
 def get_stack_frame(
     address: Annotated[str, "Function address (hex) or name"],
 ) -> dict:
-    """Get the stack frame layout of a function, showing local variables and arguments."""
-    import idaapi
+    """Get the stack frame layout of a function, showing local variables and arguments. Each member has its offset in the frame structure and its fp_offset, the frame-pointer-relative offset that declare_stack_var and delete_stack_var take."""
     import ida_funcs
     import ida_typeinf
-    import ida_frame
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
-    frame_tif = ida_typeinf.tinfo_t()
-    if not ida_frame.get_func_frame(frame_tif, fn):
+    frame_tif = _get_frame(fn)
+    if frame_tif is None:
         return {
             "function": hex(fn.start_ea),
             "name": ida_funcs.get_func_name(fn.start_ea),
@@ -1102,10 +1096,12 @@ def get_stack_frame(
 
     members = []
     for member in udt:
+        offset = member.offset // 8
         members.append(
             {
                 "name": member.name,
-                "offset": member.offset // 8,
+                "offset": offset,
+                "fp_offset": _fp_offset(fn, offset),
                 "size": member.size // 8,
             }
         )
@@ -1172,11 +1168,10 @@ def get_globals(
 ) -> dict:
     """List global variables/named data items (excludes functions)."""
     import idautils
-    import idaapi
 
     all_globals = []
     for ea, name in idautils.Names():
-        if idaapi.get_func(ea):
+        if _get_func(ea):
             continue
         if filter_str and filter_str.lower() not in name.lower():
             continue
@@ -1331,7 +1326,7 @@ def define_function(
 
     ok = idaapi.add_func(ea, end_ea)
     if not ok:
-        existing = idaapi.get_func(ea)
+        existing = _get_func(ea)
         if existing:
             return {
                 "success": False,
@@ -1339,7 +1334,7 @@ def define_function(
             }
         return {"success": False, "error": f"Failed to define function at {address}"}
 
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     return {
         "success": True,
         "address": hex(fn.start_ea),
@@ -1481,14 +1476,14 @@ def find_insns(
 
     if address:
         ea = _resolve_address(address)
-        fn = idaapi.get_func(ea)
+        fn = _get_func(ea)
         if not fn:
             return {"error": f"No function at {address}"}
         ranges = [(fn.start_ea, fn.end_ea)]
     else:
         ranges = []
         for func_ea in idautils.Functions():
-            fn = idaapi.get_func(func_ea)
+            fn = _get_func(func_ea)
             if fn:
                 ranges.append((fn.start_ea, fn.end_ea))
 
@@ -1503,7 +1498,7 @@ def find_insns(
             disasm = idc.GetDisasm(head)
             mnem = idc.print_insn_mnem(head)
             if compiled.search(disasm) or compiled.search(mnem):
-                fn = idaapi.get_func(head)
+                fn = _get_func(head)
                 results.append(
                     {
                         "address": hex(head),
@@ -1524,17 +1519,19 @@ def find_insns(
 @write_tool
 def declare_stack_var(
     address: Annotated[str, "Function address (hex) or name"],
-    var_offset: Annotated[int, "Stack frame offset for the variable"],
+    var_offset: Annotated[
+        int,
+        "Frame-pointer-relative offset (fp_offset in get_stack_frame); usually negative for local variables, positive for arguments",
+    ],
     var_name: Annotated[str, "Name for the stack variable"],
     var_type: Annotated[str, "C type declaration (e.g. 'int', 'char *')"] = "",
 ) -> dict:
     """Create or rename a stack variable in a function's stack frame."""
-    import idaapi
     import ida_frame
     import ida_typeinf
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -1548,8 +1545,10 @@ def declare_stack_var(
     else:
         tif.create_simple_type(ida_typeinf.BT_INT8)
 
-    # IDA 9.3 API: define_stkvar(pfn, name, off, tif)
-    ok = ida_frame.define_stkvar(fn, var_name, var_offset, tif)
+    if hasattr(ida_frame, "define_stkvar_ea"):  # IDA 9.5+
+        ok = ida_frame.define_stkvar_ea(fn.start_ea, var_name, var_offset, tif)
+    else:
+        ok = ida_frame.define_stkvar(fn, var_name, var_offset, tif)
     if not ok:
         return {"success": False, "error": f"Failed to define stack variable at offset {var_offset}"}
 
@@ -1559,21 +1558,43 @@ def declare_stack_var(
 @write_tool
 def delete_stack_var(
     address: Annotated[str, "Function address (hex) or name"],
-    var_offset: Annotated[int, "Stack frame offset of the variable to delete"],
-    size: Annotated[int, "Size of the variable in bytes (default 1)"] = 1,
+    var_offset: Annotated[
+        int,
+        "Frame-pointer-relative offset of the variable (fp_offset in get_stack_frame), as passed to declare_stack_var",
+    ],
+    size: Annotated[
+        int, "Bytes to delete from var_offset (default 1: the variable starting there)"
+    ] = 1,
 ) -> dict:
     """Delete a stack variable from a function's stack frame."""
-    import idaapi
     import ida_frame
+    import ida_typeinf
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
-    # IDA 9.3 API: delete_frame_members(pfn, start_offset, end_offset)
-    ok = ida_frame.delete_frame_members(fn, var_offset, var_offset + size)
-    return {"success": bool(ok), "address": hex(ea), "offset": var_offset}
+    frame_tif = _get_frame(fn)
+    udt = ida_typeinf.udt_type_data_t()
+    if frame_tif is None or not frame_tif.get_udt_details(udt):
+        return {"success": False, "error": f"No stack frame at {address}"}
+
+    # delete_frame_members() takes offsets in the frame structure
+    start = var_offset - _fp_offset(fn, 0)
+    var_name = next((m.name for m in udt if m.offset // 8 == start), None)
+    if var_name is None:
+        return {
+            "success": False,
+            "error": f"No stack variable at fp_offset {var_offset}; see get_stack_frame",
+        }
+
+    end = start + size
+    if hasattr(ida_frame, "delete_frame_members_ea"):  # IDA 9.5+
+        ok = ida_frame.delete_frame_members_ea(fn.start_ea, start, end)
+    else:
+        ok = ida_frame.delete_frame_members(fn, start, end)
+    return {"success": bool(ok), "address": hex(ea), "offset": var_offset, "name": var_name}
 
 
 # ============================================================================
@@ -1588,7 +1609,9 @@ def enum_upsert(
         list[dict],
         "List of {name, value} dicts, e.g. [{'name':'FLAG_A','value':1},{'name':'FLAG_B','value':2}]",
     ],
-    bitfield: Annotated[bool, "Treat as a bitfield enum"] = False,
+    bitfield: Annotated[
+        bool, "Create a bitmask enum (bit flags); only applies when the enum is created"
+    ] = False,
 ) -> dict:
     """Create or extend an enum type. Idempotent - existing members are preserved, new ones are added."""
     import ida_typeinf
@@ -1599,8 +1622,13 @@ def enum_upsert(
     tif = ida_typeinf.tinfo_t()
     existing = tif.get_named_type(til, name)
 
-    if existing and tif.is_enum():
-        # Extend existing enum
+    if existing and not tif.is_enum():
+        # Saving an enum under this name would replace the existing type
+        return {"success": False, "error": f"Type {name} already exists and is not an enum"}
+
+    if existing:
+        # Extend existing enum. add_edm() updates the stored type in place
+        # and keeps the bitmask groups of a bitmask enum valid.
         edt = ida_typeinf.enum_type_data_t()
         if not tif.get_enum_details(edt):
             return {"error": f"Cannot read existing enum {name}"}
@@ -1612,32 +1640,28 @@ def enum_upsert(
             m_name = m.get("name", "")
             m_value = m.get("value", 0)
             if m_name and m_name not in existing_names:
-                em = ida_typeinf.edm_t()
-                em.name = m_name
-                em.value = m_value
-                edt.push_back(em)
+                try:
+                    tif.add_edm(m_name, m_value)
+                except ValueError as e:
+                    return {
+                        "success": False,
+                        "name": name,
+                        "error": f"Cannot add {m_name}: {e}",
+                        "added_members": added,
+                    }
+                existing_names.add(m_name)
                 added.append(m_name)
-
-        total_after = total_before + len(added)
-        if added:
-            tif2 = ida_typeinf.tinfo_t()
-            tif2.create_enum(edt)
-            ordinal = tif.get_ordinal()
-            tif2.set_numbered_type(til, ordinal, ida_typeinf.NTF_REPLACE, name)
 
         return {
             "success": True,
             "name": name,
             "action": "extended",
             "added_members": added,
-            "total_members": total_after,
+            "total_members": total_before + len(added),
         }
     else:
         # Create new enum
         edt = ida_typeinf.enum_type_data_t()
-        if bitfield:
-            edt.bte = ida_typeinf.BTE_HEX | ida_typeinf.BTE_BITFIELD
-
         added_count = 0
         for m in members:
             m_name = m.get("name", "")
@@ -1650,9 +1674,24 @@ def enum_upsert(
                 added_count += 1
 
         tif_new = ida_typeinf.tinfo_t()
-        tif_new.create_enum(edt)
+        if not tif_new.create_enum(edt):
+            return {"success": False, "error": f"Failed to create enum {name}"}
+        if bitfield:
+            # IDA builds the bitmask groups itself; BTE_BITMASK must not
+            # be set by hand
+            code = tif_new.set_enum_is_bitmask(ida_typeinf.tinfo_t.ENUMBM_ON)
+            if code != ida_typeinf.TERR_OK:
+                return {
+                    "success": False,
+                    "error": f"Cannot make {name} a bitmask enum: {ida_typeinf.tinfo_errstr(code)}",
+                }
         ordinal = ida_typeinf.alloc_type_ordinal(til)
-        tif_new.set_numbered_type(til, ordinal, ida_typeinf.NTF_REPLACE, name)
+        code = tif_new.set_numbered_type(til, ordinal, ida_typeinf.NTF_REPLACE, name)
+        if code != ida_typeinf.TERR_OK:
+            return {
+                "success": False,
+                "error": f"Failed to save enum {name}: {ida_typeinf.tinfo_errstr(code)}",
+            }
 
         return {
             "success": True,
@@ -1771,7 +1810,7 @@ def xrefs_to_field(
             for xref in idautils.XrefsTo(member_tid):
                 if len(xrefs) >= max_results:
                     break
-                fn = idaapi.get_func(xref.frm)
+                fn = _get_func(xref.frm)
                 xrefs.append({
                     "from_address": hex(xref.frm),
                     "type": _xref_type_name(xref.type),
@@ -1801,33 +1840,30 @@ def find_paths(
     max_depth: Annotated[int, "Maximum path length in basic blocks (default 20)"] = 20,
 ) -> dict:
     """Find control-flow paths between two addresses within the same function using DFS on the CFG."""
-    import idaapi
     import ida_funcs
-    import ida_gdl
 
     start_ea = _resolve_address(start_address)
     end_ea = _resolve_address(end_address)
 
-    fn = idaapi.get_func(start_ea)
+    fn = _get_func(start_ea)
     if not fn:
         return {"error": f"No function at {start_address}"}
 
-    fn2 = idaapi.get_func(end_ea)
+    fn2 = _get_func(end_ea)
     if not fn2 or fn.start_ea != fn2.start_ea:
         return {"error": "Both addresses must be in the same function"}
 
-    cfg = ida_gdl.FlowChart(fn)
+    fc = _flow_chart(fn.start_ea)
 
     # Map addresses to block indices
     start_block = None
     end_block = None
-    block_map = {}
-    for block in cfg:
-        block_map[block.id] = block
+    for i in range(fc.size()):
+        block = fc[i]
         if block.start_ea <= start_ea < block.end_ea:
-            start_block = block
+            start_block = i
         if block.start_ea <= end_ea < block.end_ea:
-            end_block = block
+            end_block = i
 
     if start_block is None:
         return {"error": f"Address {start_address} not in any basic block"}
@@ -1837,25 +1873,26 @@ def find_paths(
     # DFS to find paths
     paths = []
 
-    def dfs(current, target_id, path, visited):
+    def dfs(current, target, path, visited):
         if len(paths) >= max_paths:
             return
         if len(path) > max_depth:
             return
-        if current.id == target_id:
+        if current == target:
             paths.append(
-                [{"start": hex(b.start_ea), "end": hex(b.end_ea)} for b in path]
+                [{"start": hex(fc[b].start_ea), "end": hex(fc[b].end_ea)} for b in path]
             )
             return
-        for succ in current.succs():
-            if succ.id not in visited:
-                visited.add(succ.id)
+        for j in range(fc.nsucc(current)):
+            succ = fc.succ(current, j)
+            if succ not in visited:
+                visited.add(succ)
                 path.append(succ)
-                dfs(succ, end_block.id, path, visited)
+                dfs(succ, target, path, visited)
                 path.pop()
-                visited.discard(succ.id)
+                visited.discard(succ)
 
-    dfs(start_block, end_block.id, [start_block], {start_block.id})
+    dfs(start_block, end_block, [start_block], {start_block})
 
     return {
         "function": ida_funcs.get_func_name(fn.start_ea),
@@ -1874,14 +1911,13 @@ def export_function(
     ] = "c_header",
 ) -> dict:
     """Export a function as a C header prototype or full decompiled code."""
-    import idaapi
     import ida_funcs
     import ida_nalt
     import ida_typeinf
     import ida_hexrays
 
     ea = _resolve_address(address)
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     if not fn:
         return {"error": f"No function at {address}"}
 
@@ -1967,7 +2003,7 @@ def infer_types(
     # Try 1: Hex-Rays guess_type
     if ida_hexrays.init_hexrays_plugin():
         try:
-            if idaapi.get_func(ea):
+            if _get_func(ea):
                 cfunc = ida_hexrays.decompile(ea)
                 if cfunc and cfunc.type:
                     tif = cfunc.type
@@ -2025,7 +2061,7 @@ def trace_data_flow(
     queue = deque()
 
     # Build initial node
-    fn = idaapi.get_func(ea)
+    fn = _get_func(ea)
     nodes[ea] = {
         "address": hex(ea),
         "name": ida_funcs.get_func_name(fn.start_ea) if fn else idaapi.get_name(ea) or "",
@@ -2053,7 +2089,7 @@ def trace_data_flow(
             edges.append(edge)
 
             if target not in nodes and len(nodes) < max_nodes:
-                t_fn = idaapi.get_func(target)
+                t_fn = _get_func(target)
                 nodes[target] = {
                     "address": hex(target),
                     "name": ida_funcs.get_func_name(t_fn.start_ea) if t_fn else idaapi.get_name(target) or "",
@@ -2112,13 +2148,71 @@ def _invalidate_decompiler_cache(ea: int):
         import ida_hexrays
 
         if ida_hexrays.init_hexrays_plugin():
-            import idaapi
-
-            fn = idaapi.get_func(ea)
+            fn = _get_func(ea)
             if fn:
                 ida_hexrays.mark_cfunc_dirty(fn.start_ea)
     except Exception:
         pass
+
+
+def _get_func(ea: int):
+    """Function containing ea, or None.
+
+    The result has start_ea/end_ea, the bounds of the function's entry
+    chunk. IDA 9.5 deprecates get_func() in favor of EA-based lookups and
+    gets a func_entry_info_t here; earlier versions get the func_t itself,
+    which is what their pointer-based APIs (frames, flow charts) expect.
+    """
+    import ida_funcs
+
+    if hasattr(ida_funcs, "get_func_entry_info"):  # IDA 9.5+
+        fn = ida_funcs.func_entry_info_t()
+        return fn if ida_funcs.get_func_entry_info(fn, ea) else None
+    return ida_funcs.get_func(ea)
+
+
+def _flow_chart(func_ea: int):
+    """Flow chart (basic blocks) of the function starting at func_ea.
+
+    A qflow_chart_ea_t on IDA 9.5+, a qflow_chart_t before; both offer
+    size(), [n], nsucc()/succ(), npred()/pred() and calc_block_type().
+    """
+    import ida_gdl
+    import idaapi
+
+    if hasattr(ida_gdl, "qflow_chart_ea_t"):  # IDA 9.5+
+        return ida_gdl.qflow_chart_ea_t(
+            "", func_ea, idaapi.BADADDR, idaapi.BADADDR, 0
+        )
+    return ida_gdl.qflow_chart_t(
+        "", _get_func(func_ea), idaapi.BADADDR, idaapi.BADADDR, 0
+    )
+
+
+def _get_frame(fn):
+    """Frame structure (tinfo_t) of a function from _get_func(), or None."""
+    import ida_frame
+    import ida_typeinf
+
+    frame_tif = ida_typeinf.tinfo_t()
+    if hasattr(ida_frame, "get_func_frame_ea"):  # IDA 9.5+
+        ok = ida_frame.get_func_frame_ea(frame_tif, fn.start_ea)
+    else:
+        ok = ida_frame.get_func_frame(frame_tif, fn)
+    return frame_tif if ok else None
+
+
+def _fp_offset(fn, soff: int) -> int:
+    """Frame-pointer-relative offset of frame structure offset soff.
+
+    This is the offset define_stkvar() takes, so stack variable tools use
+    it; frame structure offsets differ from it by a per-function constant.
+    """
+    import ida_frame
+
+    if hasattr(ida_frame, "soff_to_fpoff_ea"):  # IDA 9.5+
+        return ida_frame.soff_to_fpoff_ea(fn.start_ea, soff)
+    return ida_frame.soff_to_fpoff(fn, soff)
 
 
 def _resolve_address(addr_or_name: str) -> int:
@@ -2172,11 +2266,49 @@ def _xref_type_name(xtype: int) -> str:
     return NAMES.get(xtype, f"type_{xtype}")
 
 
-def _seg_perms(seg) -> str:
+def _get_segment(ea: int) -> Optional[dict]:
+    """Bounds, name, class and rwx permissions of the segment containing ea.
+
+    IDA 9.5 deprecates getseg() and the segment_t accessors in favor of
+    EA-based ones (get_segment_info, get_segment_name, ...).
+    """
+    import ida_segment
+
+    if hasattr(ida_segment, "get_segment_info"):  # IDA 9.5+
+        seg = ida_segment.segment_info_t()
+        if not ida_segment.get_segment_info(seg, ea):
+            return None
+        perm = seg.get_perm()
+        name = ida_segment.get_segment_name(seg.start_ea)
+        sclass = ida_segment.get_segment_class(seg.start_ea)
+    else:
+        seg = ida_segment.getseg(ea)
+        if not seg:
+            return None
+        perm = seg.perm
+        name = ida_segment.get_segm_name(seg)
+        sclass = ida_segment.get_segm_class(seg)
+    return {
+        "start": seg.start_ea,
+        "end": seg.end_ea,
+        "name": name,
+        "class": sclass,
+        "permissions": _seg_perms(perm),
+    }
+
+
+def _seg_perms(perm: int) -> str:
     """Format segment permissions as rwx string."""
     import idaapi
 
-    r = "r" if seg.perm & idaapi.SEGPERM_READ else "-"
-    w = "w" if seg.perm & idaapi.SEGPERM_WRITE else "-"
-    x = "x" if seg.perm & idaapi.SEGPERM_EXEC else "-"
+    r = "r" if perm & idaapi.SEGPERM_READ else "-"
+    w = "w" if perm & idaapi.SEGPERM_WRITE else "-"
+    x = "x" if perm & idaapi.SEGPERM_EXEC else "-"
     return r + w + x
+
+
+def _is_synthetic_string(s) -> bool:
+    """Whether a string list item is synthetic (IDA 9.5+): reported by a
+    provider such as the decompiler, its text is not in the bytes at s.ea."""
+    is_synthetic = getattr(s, "is_synthetic_string", None)
+    return bool(is_synthetic and is_synthetic())

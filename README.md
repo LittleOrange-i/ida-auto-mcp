@@ -26,12 +26,12 @@ It is not the only headless option: [ida-pro-mcp](https://github.com/mrexodia/id
 
 ### Prerequisites
 
-1. **IDA Pro 9.0+** (with valid license)
+1. **IDA Pro 9.0+** (with valid license), tested with IDA 9.3 and 9.5. On IDA 9.5 the server uses the address-based APIs that replace the ones 9.5 deprecates (`get_func`, `getseg`, the `func_t`-based frame functions), so it prints no `DeprecationWarning`; earlier versions keep using the original APIs.
 2. **idapro Python package** — shipped with IDA Pro:
    ```bash
    pip install "<IDA_INSTALL_DIR>/idalib/python/idapro-<version>-py3-none-any.whl"
    ```
-   The file name depends on the IDA release, for example `idapro-0.0.7-py3-none-any.whl` in IDA 9.3.
+   The file name depends on the IDA release, for example `idapro-0.0.7-py3-none-any.whl` in IDA 9.3 and `idapro-0.0.10-py3-none-any.whl` in IDA 9.5. After upgrading IDA, install the wheel from the new installation and point `IDADIR` (or `--ida-dir`) at it.
 3. **IDADIR** — set via environment variable or `--ida-dir` flag
 
 ### Installation
@@ -172,7 +172,7 @@ Tools marked *(write)* need `--allow-write`; *(script)* needs `--allow-script`.
 #### Data
 | Tool | Description |
 |------|-------------|
-| `list_strings` | Strings in the binary |
+| `list_strings` | Strings in the binary; IDA 9.5 synthetic strings, which exist only in the code, are marked `synthetic` |
 | `search_strings` | Regex search in strings |
 | `list_imports` | Imported functions by module |
 | `list_exports` | Exported symbols |
@@ -200,12 +200,12 @@ Tools marked *(write)* need `--allow-write`; *(script)* needs `--allow-script`.
 | `type_inspect` | Inspect a named type in detail (size, kind, declaration, members) |
 | `declare_type` | Declare C type definition in local type library *(write)* |
 | `apply_type` | Apply type to address (function, global, etc.) *(write)* |
-| `enum_upsert` | Create or extend an enum type (idempotent) *(write)* |
+| `enum_upsert` | Create or extend an enum type, optionally a bitmask enum (idempotent) *(write)* |
 | `infer_types` | Auto-infer and apply type at address (Hex-Rays/heuristic) *(write)* |
 | `xrefs_to_field` | Get cross-references to a specific struct field member |
-| `get_stack_frame` | Get stack frame layout (locals, args) |
-| `declare_stack_var` | Create or rename a stack variable *(write)* |
-| `delete_stack_var` | Delete a stack variable from a function frame *(write)* |
+| `get_stack_frame` | Get stack frame layout (locals, args); each member's `fp_offset` (frame-pointer-relative) is the offset the stack variable tools take |
+| `declare_stack_var` | Create or rename the stack variable at an `fp_offset` *(write)* |
+| `delete_stack_var` | Delete the stack variable at an `fp_offset` from a function frame *(write)* |
 
 #### Code Definition
 | Tool | Description |
@@ -314,12 +314,12 @@ IDA Auto MCP 是直接基于 IDA 无头分析库 `idalib` 的小型 MCP 服务�
 
 ### 前置要求
 
-1. **IDA Pro 9.0+**（需要有效许可证）
+1. **IDA Pro 9.0+**（需要有效许可证），已在 IDA 9.3 和 9.5 上测试。在 IDA 9.5 上，服务器改用基于地址的新接口，替代 9.5 弃用的接口（`get_func`、`getseg`、基于 `func_t` 的栈帧函数等），因此不会输出 `DeprecationWarning`；更早的版本继续使用原有接口。
 2. **idapro Python 包** — IDA Pro 安装目录自带：
    ```bash
    pip install "<IDA安装目录>/idalib/python/idapro-<版本>-py3-none-any.whl"
    ```
-   文件名随 IDA 版本而变，例如 IDA 9.3 中为 `idapro-0.0.7-py3-none-any.whl`。
+   文件名随 IDA 版本而变，例如 IDA 9.3 中为 `idapro-0.0.7-py3-none-any.whl`，IDA 9.5 中为 `idapro-0.0.10-py3-none-any.whl`。升级 IDA 后，请安装新安装目录中的 wheel，并把 `IDADIR`（或 `--ida-dir`）指向新的安装目录。
 3. **IDADIR** — 通过环境变量或 `--ida-dir` 参数设置 IDA 安装路径
 
 ### 安装
@@ -458,7 +458,7 @@ python -m ida_auto_mcp -v
 #### 数据查询
 | 工具 | 说明 |
 |------|------|
-| `list_strings` | 列出二进制中的字符串 |
+| `list_strings` | 列出二进制中的字符串；IDA 9.5 中仅存在于代码里的合成字符串会标记为 `synthetic` |
 | `search_strings` | 正则搜索字符串 |
 | `list_imports` | 列出导入函数（按模块） |
 | `list_exports` | 列出导出符号 |
@@ -486,12 +486,12 @@ python -m ida_auto_mcp -v
 | `type_inspect` | 按名称查看类型详情（大小/类型/声明/成员） |
 | `declare_type` | 声明 C 类型定义到本地类型库 *（写入）* |
 | `apply_type` | 将类型应用到地址（函数、全局变量等） *（写入）* |
-| `enum_upsert` | 创建或扩展枚举类型（幂等操作） *（写入）* |
+| `enum_upsert` | 创建或扩展枚举类型，可选位掩码枚举（幂等操作） *（写入）* |
 | `infer_types` | 自动推断并应用地址处的类型（Hex-Rays/启发式） *（写入）* |
 | `xrefs_to_field` | 获取结构体特定字段的交叉引用 |
-| `get_stack_frame` | 获取函数栈帧布局 |
-| `declare_stack_var` | 创建或重命名栈变量 *（写入）* |
-| `delete_stack_var` | 删除函数栈帧中的栈变量 *（写入）* |
+| `get_stack_frame` | 获取函数栈帧布局；每个成员的 `fp_offset`（相对帧指针的偏移）就是栈变量工具使用的偏移 |
+| `declare_stack_var` | 在指定 `fp_offset` 处创建或重命名栈变量 *（写入）* |
+| `delete_stack_var` | 删除函数栈帧中指定 `fp_offset` 处的栈变量 *（写入）* |
 
 #### 代码定义
 | 工具 | 说明 |
