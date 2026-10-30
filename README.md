@@ -40,12 +40,27 @@ It is not the only headless option: [ida-pro-mcp](https://github.com/mrexodia/id
 ### Installation
 
 ```bash
+pip install ida-auto-mcp
+```
+
+This installs the `ida-auto-mcp` command together with Hex-Rays' `idapro`
+package. With [uv](https://github.com/astral-sh/uv) you can skip the
+installation: `uvx ida-auto-mcp` runs the server in an environment that uv
+manages, and `uvx ida-auto-mcp@latest` also picks up new releases.
+
+To work on the code, install it from a clone instead:
+
+```bash
 git clone https://github.com/mufeng05/ida-auto-mcp.git
 cd ida-auto-mcp
 pip install -e .
 ```
 
 ### Quick Start
+
+The configurations below run `python -m ida_auto_mcp` with the Python you
+installed the package into. To use uv instead, set the command to `uvx` and
+put `ida-auto-mcp` before the other arguments.
 
 #### Claude Code plugin
 
@@ -93,7 +108,16 @@ the configuration; restart the desktop app or IDE extension when using those
 clients. See the [Codex MCP documentation](https://developers.openai.com/codex/mcp/)
 for additional configuration options.
 
-#### Claude Code (`~/.claude.json`)
+#### Claude Code
+
+Register the server with the Claude Code CLI (add `-s user` to make it
+available in every project):
+
+```bash
+claude mcp add ida -e "IDADIR=C:/Program Files/IDA Pro" -- uvx ida-auto-mcp
+```
+
+Or add it to `~/.claude.json` yourself:
 
 ```json
 {
@@ -317,18 +341,18 @@ python -m unittest discover -s tests -v
 - **HTTP transport** is meant for local debugging. It listens on 127.0.0.1, and every POST to `/mcp` needs `Authorization: Bearer <token>`. A random token is printed at startup; when you register the server in a client, set your own in the `IDA_AUTO_MCP_TOKEN` environment variable instead, because the random one changes on every start. Requests whose `Host` or `Origin` is not a loopback address are rejected, which blocks DNS rebinding and calls from web pages on other sites. `--host` changes this: bound to a specific address, the server also accepts that address as `Host` and `Origin`; bound to all interfaces (`0.0.0.0`), it accepts any `Host` and relies on the token alone. Either way it prints a warning, because the traffic is not encrypted. With Claude Code, for example: `claude mcp add --transport http ida http://127.0.0.1:8765/mcp --header "Authorization: Bearer <token>"`.
 - **Untrusted samples:** analyze malware only inside an isolated VM. Everything the tools return from a sample (strings, names, decompiled code) is untrusted input to your agent.
 - **Intended use:** software you own or are authorized to analyze, such as malware triage, vulnerability research and auditing your own builds and firmware. Don't use it to circumvent software licensing.
-- Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
+- Report vulnerabilities as described in [SECURITY.md](https://github.com/mufeng05/ida-auto-mcp/blob/master/SECURITY.md).
 
 ### Acknowledgements
 
-- The MCP protocol layer (`mcp_server.py`) is adapted from [zeromcp](https://github.com/mrexodia/zeromcp) by Duncan Ogilvie (MIT License); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- The MCP protocol layer (`mcp_server.py`) is adapted from [zeromcp](https://github.com/mrexodia/zeromcp) by Duncan Ogilvie (MIT License); see [THIRD_PARTY_NOTICES.md](https://github.com/mufeng05/ida-auto-mcp/blob/master/THIRD_PARTY_NOTICES.md).
 - Many tool names and features follow [ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp).
 - The control-flow, struct and patching tools were first modeled on [ida-mcp-rs](https://github.com/blacktop/ida-mcp-rs).
 - The database file checks and the way tool calls are interrupted follow Hex-Rays' [ida-nexus](https://github.com/HexRaysSA/ida-nexus) (MIT License), the library behind the official [IDA MCP server](https://github.com/HexRaysSA/ida-mcp).
 
 ### License
 
-MIT, see [LICENSE](LICENSE). IDA Pro itself requires a valid license.
+MIT, see [LICENSE](https://github.com/mufeng05/ida-auto-mcp/blob/master/LICENSE). IDA Pro itself requires a valid license.
 
 ---
 
@@ -368,12 +392,25 @@ IDA Auto MCP 是直接基于 IDA 无头分析库 `idalib` 的小型 MCP 服务�
 ### 安装
 
 ```bash
+pip install ida-auto-mcp
+```
+
+这会安装 `ida-auto-mcp` 命令，以及 Hex-Rays 的 `idapro` 包。如果使用
+[uv](https://github.com/astral-sh/uv)，可以不用安装：`uvx ida-auto-mcp`
+会在 uv 管理的环境中运行服务器，`uvx ida-auto-mcp@latest` 还会自动使用新版本。
+
+如需修改代码，请改为从克隆的仓库安装：
+
+```bash
 git clone https://github.com/mufeng05/ida-auto-mcp.git
 cd ida-auto-mcp
 pip install -e .
 ```
 
 ### 快速开始
+
+下面的配置用安装了本包的 Python 运行 `python -m ida_auto_mcp`。如果改用 uv，
+把命令设为 `uvx`，并把 `ida-auto-mcp` 放在其他参数之前即可。
 
 #### Claude Code 插件
 
@@ -418,7 +455,15 @@ codex mcp list
 修改配置后请新建 Codex 会话；使用桌面应用或 IDE 扩展时，请重启对应客户端。
 更多配置选项请参阅 [Codex MCP 官方文档](https://developers.openai.com/codex/mcp/)。
 
-#### Claude Code 配置 (`~/.claude.json`)
+#### Claude Code 配置
+
+用 Claude Code CLI 注册服务器（加上 `-s user` 可在所有项目中使用）：
+
+```bash
+claude mcp add ida -e "IDADIR=C:/Program Files/IDA Pro" -- uvx ida-auto-mcp
+```
+
+也可以自行写入 `~/.claude.json`：
 
 ```json
 {
@@ -642,15 +687,15 @@ python -m unittest discover -s tests -v
 - **HTTP 传输**仅用于本机调试。它监听 127.0.0.1，每个发往 `/mcp` 的 POST 请求都必须带 `Authorization: Bearer <令牌>`。启动时会打印一个随机令牌；在客户端中注册服务器时，请改用环境变量 `IDA_AUTO_MCP_TOKEN` 指定固定令牌，因为随机令牌每次启动都会变。`Host` 或 `Origin` 不是本机回环地址的请求会被拒绝，以防御 DNS 重绑定和其他网站页面发起的请求。`--host` 会改变这一规则：绑定到某个具体地址时，该地址也会被接受为 `Host` 和 `Origin`；绑定到所有网卡（`0.0.0.0`）时，接受任意 `Host`，只靠令牌把关。这两种情况都会打印警告，因为流量没有加密。以 Claude Code 为例：`claude mcp add --transport http ida http://127.0.0.1:8765/mcp --header "Authorization: Bearer <令牌>"`。
 - **不可信样本**：恶意软件只在隔离的虚拟机中分析。工具从样本中返回的一切内容（字符串、名称、反编译代码）对 AI 智能体来说都是不可信输入。
 - **用途**：分析你拥有或获得授权分析的软件，例如恶意样本分析、漏洞研究、审计自己构建的程序和固件。请勿用于绕过软件授权。
-- 发现漏洞请按 [SECURITY.md](SECURITY.md) 中的方式报告。
+- 发现漏洞请按 [SECURITY.md](https://github.com/mufeng05/ida-auto-mcp/blob/master/SECURITY.md) 中的方式报告。
 
 ### 致谢
 
-- MCP 协议层（`mcp_server.py`）改编自 Duncan Ogilvie 的 [zeromcp](https://github.com/mrexodia/zeromcp)（MIT 许可证），详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- MCP 协议层（`mcp_server.py`）改编自 Duncan Ogilvie 的 [zeromcp](https://github.com/mrexodia/zeromcp)（MIT 许可证），详见 [THIRD_PARTY_NOTICES.md](https://github.com/mufeng05/ida-auto-mcp/blob/master/THIRD_PARTY_NOTICES.md)。
 - 许多工具的命名和功能参考了 [ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp)。
 - 控制流、结构体和补丁类工具最初参考 [ida-mcp-rs](https://github.com/blacktop/ida-mcp-rs) 实现。
 - 数据库文件检查和工具调用的中断方式参考了 Hex-Rays 的 [ida-nexus](https://github.com/HexRaysSA/ida-nexus)（MIT 许可证），它是官方 [IDA MCP 服务器](https://github.com/HexRaysSA/ida-mcp) 的底层库。
 
 ### 许可
 
-MIT，详见 [LICENSE](LICENSE)。IDA Pro 本身需要有效的许可证。
+MIT，详见 [LICENSE](https://github.com/mufeng05/ida-auto-mcp/blob/master/LICENSE)。IDA Pro 本身需要有效的许可证。
